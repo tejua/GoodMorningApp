@@ -24,6 +24,7 @@ extension Color {
 }
 
 struct ContentView: View {
+    var preview: VoiceTranslator? = nil   // used only by offscreen preview renders
     @AppStorage("bgColor") private var bgHex = "1E1E2EFF"
     @AppStorage("textColor") private var textHex = "FFFFFFFF"
     @State private var showOptions = false
@@ -36,54 +37,86 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            if showOptions {
-                VStack(spacing: 10) {
-                    ColorPicker("Background colour", selection: bgColor, supportsOpacity: false)
-                    ColorPicker("Text colour", selection: textColor, supportsOpacity: false)
-                    Button("Reset to default") {
-                        bgHex = "1E1E2EFF"; textHex = "FFFFFFFF"
+        TranslatorScreen(textColor: Color(hex: textHex), preview: preview)
+            .foregroundStyle(Color(hex: textHex))
+            .frame(minWidth: 760, minHeight: 600)
+            .background(Color(hex: bgHex).ignoresSafeArea())
+            .overlay(alignment: .topTrailing) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button {
+                        withAnimation { showOptions.toggle() }
+                    } label: {
+                        Image(systemName: showOptions ? "xmark.circle.fill" : "paintpalette.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color(hex: textHex))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Colour options")
+                    if showOptions {
+                        VStack(spacing: 10) {
+                            ColorPicker("Background colour", selection: bgColor, supportsOpacity: false)
+                            ColorPicker("Text colour", selection: textColor, supportsOpacity: false)
+                            Button("Reset to default") {
+                                bgHex = "1E1E2EFF"; textHex = "FFFFFFFF"
+                            }
+                        }
+                        .padding(14)
+                        .frame(width: 260)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .foregroundStyle(.primary)
+                        .transition(.opacity)
                     }
                 }
                 .padding(14)
-                .frame(width: 280)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .foregroundStyle(.primary)
             }
-
-            VoiceTranslateView(textColor: Color(hex: textHex))
-        }
-        .foregroundStyle(Color(hex: textHex))
-        .padding(.horizontal, 40)
-        .padding(.vertical, 32)
-        .frame(minWidth: 580, minHeight: 520)
-        .background(Color(hex: bgHex))
-        .overlay(alignment: .topTrailing) {
-            Button {
-                withAnimation { showOptions.toggle() }
-            } label: {
-                Image(systemName: showOptions ? "xmark.circle.fill" : "paintpalette.fill")
-                    .font(.title2)
-                    .foregroundStyle(Color(hex: textHex))
-            }
-            .buttonStyle(.plain)
-            .help("Colour options")
-            .padding(12)
-        }
     }
 }
 
 // MARK: - Voice translation (all on-device Apple frameworks)
 
 enum SpokenLang: String, CaseIterable, Identifiable {
-    case english, hindi
+    // Raw values of english/hindi kept so saved choices from earlier versions still load.
+    case english, hindi, spanish, french, german, japanese, chinese, arabic, portuguese, korean
     var id: String { rawValue }
-    var label: String { self == .english ? "English" : "हिन्दी Hindi" }
-    var name: String { self == .english ? "English" : "Hindi" }
-    var speechLocales: [String] { self == .english ? ["en-IN", "en-US"] : ["hi-IN"] }
-    var language: Locale.Language { Locale.Language(identifier: self == .english ? "en" : "hi") }
-    var voiceCodes: [String] { self == .english ? ["en-IN", "en-US"] : ["hi-IN"] }
-    var other: SpokenLang { self == .english ? .hindi : .english }
+    var name: String {
+        switch self {
+        case .english: "English";   case .hindi: "Hindi";     case .spanish: "Spanish"
+        case .french: "French";     case .german: "German";   case .japanese: "Japanese"
+        case .chinese: "Chinese";   case .arabic: "Arabic";   case .portuguese: "Portuguese"
+        case .korean: "Korean"
+        }
+    }
+    var nativeName: String {
+        switch self {
+        case .english: "English";   case .hindi: "हिन्दी";      case .spanish: "Español"
+        case .french: "Français";   case .german: "Deutsch";  case .japanese: "日本語"
+        case .chinese: "中文";       case .arabic: "العربية";   case .portuguese: "Português"
+        case .korean: "한국어"
+        }
+    }
+    var label: String { nativeName == name ? name : "\(name) · \(nativeName)" }
+    /// Speech recognition locales, best first. Also used to pick a synthesis voice.
+    var speechLocales: [String] {
+        switch self {
+        case .english: ["en-IN", "en-US", "en-GB"]; case .hindi: ["hi-IN"]
+        case .spanish: ["es-ES", "es-MX", "es-US"]; case .french: ["fr-FR", "fr-CA"]
+        case .german: ["de-DE"];                    case .japanese: ["ja-JP"]
+        case .chinese: ["zh-CN", "zh-TW"];          case .arabic: ["ar-SA", "ar-AE"]
+        case .portuguese: ["pt-BR", "pt-PT"];       case .korean: ["ko-KR"]
+        }
+    }
+    /// Translation framework language.
+    var language: Locale.Language {
+        let code: String
+        switch self {
+        case .english: code = "en";    case .hindi: code = "hi";      case .spanish: code = "es"
+        case .french: code = "fr";     case .german: code = "de";     case .japanese: code = "ja"
+        case .chinese: code = "zh-Hans"; case .arabic: code = "ar";   case .portuguese: code = "pt-BR"
+        case .korean: code = "ko"
+        }
+        return Locale.Language(identifier: code)
+    }
+    var voiceCodes: [String] { speechLocales }
 }
 
 // Thread-safe hand-off from the audio tap to the current Live recognition request.
@@ -129,6 +162,7 @@ struct LiveSegment: Identifiable, Equatable {
     let said: String
     var translation: String = ""
     let from: SpokenLang
+    let to: SpokenLang
     var failed = false
 }
 
@@ -148,6 +182,7 @@ final class VoiceTranslator: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private let synth = AVSpeechSynthesizer()
     private(set) var source: SpokenLang = .english
+    private(set) var target: SpokenLang = .hindi
     private var pendingText = ""
     private var prepareOnly = false
     private var finished = true
@@ -241,16 +276,16 @@ final class VoiceTranslator: ObservableObject {
         return (mic, speech)
     }
 
-    func toggle(_ lang: SpokenLang, live: Bool = false) {
+    func toggle(_ lang: SpokenLang, to dest: SpokenLang, live: Bool = false) {
         if isRecording {
             if liveActive { stopLive() } else { stop() }
         } else {
-            Task { if live { await startLive(lang) } else { await start(lang) } }
+            Task { if live { await startLive(lang, to: dest) } else { await start(lang, to: dest) } }
         }
     }
 
     // MARK: - Live mode (sentence-by-sentence)
-    func startLive(_ lang: SpokenLang) async {
+    func startLive(_ lang: SpokenLang, to dest: SpokenLang) async {
         errorMessage = nil
         permissionDenied = false
         let perms = await Self.requestPermissions()
@@ -273,6 +308,7 @@ final class VoiceTranslator: ObservableObject {
         session += 1            // invalidate any non-live timers
         finished = true
         source = lang
+        target = dest
         liveRecognizer = rec
         onDevice = rec.supportsOnDeviceRecognition
         transcript = ""
@@ -424,7 +460,7 @@ final class VoiceTranslator: ObservableObject {
     }
 
     private func addSegment(_ text: String) {
-        let seg = LiveSegment(said: text, from: source)
+        let seg = LiveSegment(said: text, from: source, to: target)
         history.append(seg)
         if history.count > Self.liveHistoryCap { history.removeFirst(history.count - Self.liveHistoryCap) }
         translateQueue.append(seg.id)
@@ -481,7 +517,7 @@ final class VoiceTranslator: ObservableObject {
                 } catch {
                     if Task.isCancelled { return }
                     if let i = history.firstIndex(where: { $0.id == id }) { history[i].failed = true }
-                    errorMessage = "Couldn't translate: \(error.localizedDescription). You may need to download English and Hindi in System Settings › General › Language & Region › Translation Languages."
+                    errorMessage = "Couldn't translate: \(error.localizedDescription). You may need to download \(source.name) and \(target.name) in System Settings › General › Language & Region › Translation Languages."
                 }
                 continue
             }
@@ -508,7 +544,7 @@ final class VoiceTranslator: ObservableObject {
         liveSpeaking = true
         liveSink.setMuted(true)          // don't let the speaker echo into the mic
         status = "Live: speaking translation…"
-        speakText(seg.translation, in: seg.from.other)
+        speakText(seg.translation, in: seg.to)
     }
 
     private func liveSpeechDone() {
@@ -531,7 +567,7 @@ final class VoiceTranslator: ObservableObject {
             speechQueue.append(seg.id); speakNextLive()
         } else {
             synth.stopSpeaking(at: .immediate)
-            speakText(seg.translation, in: seg.from.other)
+            speakText(seg.translation, in: seg.to)
         }
     }
 
@@ -543,7 +579,7 @@ final class VoiceTranslator: ObservableObject {
     }
 
     // MARK: Recording
-    func start(_ lang: SpokenLang) async {
+    func start(_ lang: SpokenLang, to dest: SpokenLang) async {
         errorMessage = nil
         permissionDenied = false
         let perms = await Self.requestPermissions()
@@ -563,6 +599,7 @@ final class VoiceTranslator: ObservableObject {
         }
         synth.stopSpeaking(at: .immediate)
         source = lang
+        target = dest
         transcript = ""
         translation = ""
         finished = false
@@ -724,7 +761,7 @@ final class VoiceTranslator: ObservableObject {
 
     // MARK: Translation
     private func trigger() {
-        let wanted = TranslationSession.Configuration(source: source.language, target: source.other.language)
+        let wanted = TranslationSession.Configuration(source: source.language, target: target.language)
         if config?.source == wanted.source && config?.target == wanted.target {
             config?.invalidate()
         } else {
@@ -738,14 +775,15 @@ final class VoiceTranslator: ObservableObject {
         trigger()
     }
 
-    func downloadPacks(for lang: SpokenLang) {
+    func downloadPacks(from lang: SpokenLang, to dest: SpokenLang) {
         source = lang
+        target = dest
         prepareOnly = true
         trigger()
     }
 
-    func checkPacks(for lang: SpokenLang) async {
-        let status = await LanguageAvailability().status(from: lang.language, to: lang.other.language)
+    func checkPacks(from lang: SpokenLang, to dest: SpokenLang) async {
+        let status = await LanguageAvailability().status(from: lang.language, to: dest.language)
         packMissing = (status == .supported)
     }
 
@@ -776,7 +814,7 @@ final class VoiceTranslator: ObservableObject {
             speak()
         } catch {
             status = "Translation failed"
-            errorMessage = "Couldn't translate: \(error.localizedDescription). You may need to download English and Hindi in System Settings › General › Language & Region › Translation Languages."
+            errorMessage = "Couldn't translate: \(error.localizedDescription). You may need to download \(source.name) and \(target.name) in System Settings › General › Language & Region › Translation Languages."
         }
     }
 
@@ -784,7 +822,6 @@ final class VoiceTranslator: ObservableObject {
     func speak() {
         guard !translation.isEmpty else { return }
         synth.stopSpeaking(at: .immediate)
-        let target = source.other
         let utterance = AVSpeechUtterance(string: translation)
         utterance.voice = target.voiceCodes.lazy.compactMap { AVSpeechSynthesisVoice(language: $0) }.first
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -792,78 +829,52 @@ final class VoiceTranslator: ObservableObject {
     }
 }
 
-struct VoiceTranslateView: View {
-    @StateObject private var vt = VoiceTranslator()
-    @AppStorage("spokenLang") private var spoken: SpokenLang = .english
+// MARK: - Full-window translator screen
+
+struct TranslatorScreen: View {
+    @StateObject private var vt: VoiceTranslator
+    @AppStorage("sourceLang") private var source: SpokenLang = .english
+    @AppStorage("targetLang") private var target: SpokenLang = .hindi
     @AppStorage("liveMode") private var live = false
     @AppStorage("showAvatar") private var showAvatar = true
+    @State private var showHistory = false
     let textColor: Color
 
+    init(textColor: Color, preview: VoiceTranslator? = nil) {
+        self.textColor = textColor
+        _vt = StateObject(wrappedValue: preview ?? VoiceTranslator())
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
+        VStack(spacing: 0) {
+            topBar
+            GeometryReader { geo in stage(geo.size) }
+            bottomBar
+        }
+        .translationTask(vt.config) { session in
+            await vt.run(session)
+        }
+        .task(id: "\(source.rawValue)>\(target.rawValue)") { await vt.checkPacks(from: source, to: target) }
+        .onChange(of: source) { old, new in if new == target { target = old } }
+        .onChange(of: target) { old, new in if new == source { source = old } }
+    }
+
+    // MARK: Top
+    private var topBar: some View {
+        VStack(spacing: 8) {
+            HStack {
                 Text("Translator").font(.title2.weight(.bold))
-                HStack {
-                    Spacer()
-                    Toggle("Avatar", isOn: $showAvatar)
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .help("Show the animated avatar")
-                }
-            }
-
-            if showAvatar {
-                AvatarCard(vt: vt, textColor: textColor)
-                    .transition(.opacity)
-            }
-
-            HStack(spacing: 8) {
-                Text("I'm speaking")
-                Picker("", selection: $spoken) {
-                    ForEach(SpokenLang.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 200)
-                .disabled(vt.isRecording)
-                Image(systemName: "arrow.right")
-                Text(spoken.other.name).fontWeight(.semibold)
-                Toggle("Live", isOn: $live)
+                Spacer()
+                Toggle("Avatar", isOn: $showAvatar)
                     .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .disabled(vt.isRecording)
-                    .help("Live: keep listening and translate sentence by sentence")
-                    .padding(.leading, 6)
+                    .controlSize(.mini)
+                    .help("Show the animated avatar")
+                    .padding(.trailing, 44)   // room for the palette button
             }
-
-            Button { vt.toggle(spoken, live: live) } label: {
-                ZStack {
-                    Circle()
-                        .fill(vt.isRecording ? Color.red : textColor.opacity(0.18))
-                        .frame(width: 78, height: 78)
-                    Image(systemName: vt.isRecording ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 32, weight: .semibold))
-                        .foregroundStyle(vt.isRecording ? Color.white : textColor)
-                }
-                .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.space, modifiers: [])
-            .help(vt.isRecording ? (vt.liveActive ? "Stop live translation" : "Stop and translate")
-                                 : (live ? "Start live translation" : "Start recording"))
-
-            Text(vt.status).font(.callout).opacity(0.75)
-
-            if vt.packMissing {
-                Button("Download \(spoken.name) → \(spoken.other.name) for offline translation") {
-                    vt.downloadPacks(for: spoken)
-                }
-                .font(.callout)
-            }
-
             if let err = vt.errorMessage {
-                VStack(spacing: 6) {
-                    Text(err).font(.callout).multilineTextAlignment(.center)
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(err).font(.callout)
                     if vt.permissionDenied {
                         Button("Open Privacy Settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
@@ -873,120 +884,238 @@ struct VoiceTranslateView: View {
                     }
                 }
                 .padding(10)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: 640)
                 .background(Color.orange.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
             }
+            if vt.packMissing {
+                Button("Download \(source.name) → \(target.name) for offline translation") {
+                    vt.downloadPacks(from: source, to: target)
+                }
+                .font(.callout)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+    }
 
-            box(title: "You said (\(vt.isRecording ? spoken.name : vt.source.name))",
-                text: vt.transcript, placeholder: "Your words will appear here…")
-            if live || vt.liveActive {
-                box(title: "Live translation (\(vt.isRecording ? spoken.other.name : vt.source.other.name))",
-                    text: vt.livePartialTranslation, placeholder: "Translates as you speak…")
+    // MARK: Stage (girl + bubbles)
+    private func stage(_ size: CGSize) -> some View {
+        let figH = max(260, min(size.height - 8, size.width * 0.9))
+        let figW = figH / 2
+        let bubbleW = max(190, min(340, (size.width - figW - 70) / 2))
+        return Group {
+            if showAvatar {
+                HStack(alignment: .top, spacing: 18) {
+                    VStack { youBubble; Spacer(minLength: 0) }
+                        .frame(width: bubbleW)
+                        .padding(.top, figH * 0.14)
+                    AvatarDriver(vt: vt)
+                        .frame(width: figW, height: figH)
+                    VStack { herBubble; Spacer(minLength: 0) }
+                        .frame(width: bubbleW)
+                        .padding(.top, figH * 0.05)
+                }
             } else {
-                box(title: "Translation (\(vt.isRecording ? spoken.other.name : vt.source.other.name))",
-                    text: vt.translation, placeholder: "The translation will appear and be spoken here…",
-                    replay: !vt.translation.isEmpty)
+                VStack(spacing: 18) {
+                    youBubble
+                    herBubble
+                }
+                .frame(width: min(520, size.width - 60))
             }
+        }
+        .frame(width: size.width, height: size.height)
+        .animation(.easeInOut(duration: 0.2), value: showAvatar)
+    }
 
-            if live || vt.liveActive || !vt.history.isEmpty {
-                historyList
+    private var youCaption: String { "You · \(vt.isRecording || vt.transcript.isEmpty ? source.name : vt.source.name)" }
+    private var herCaption: String { "Translation · \(vt.isRecording ? target.name : vt.target.name)" }
+
+    @ViewBuilder private var youBubble: some View {
+        if !vt.transcript.isEmpty {
+            TalkBubble(caption: youCaption, text: vt.transcript, tailOnLeading: false)
+        } else if vt.isRecording {
+            TalkBubble(caption: youCaption, text: "Listening…", tailOnLeading: false, dim: true) {
+                LiveLevel()
             }
         }
-        .frame(width: 500)
-        .translationTask(vt.config) { session in
-            await vt.run(session)
+    }
+
+    @ViewBuilder private var herBubble: some View {
+        if vt.avatarSpeaking {
+            TalkBubble(caption: herCaption, text: vt.avatarSpeech, highlight: vt.avatarWordRange, tailOnLeading: true)
+        } else if vt.liveActive {
+            let lastDone = vt.history.last(where: { !$0.translation.isEmpty })?.translation ?? ""
+            let text = vt.livePartialTranslation.isEmpty ? lastDone : vt.livePartialTranslation
+            if !text.isEmpty {
+                TalkBubble(caption: herCaption, text: text, tailOnLeading: true, dim: vt.livePartialTranslation.isEmpty)
+            }
+        } else if vt.status == "Translating…" {
+            EmptyView()
+        } else if !vt.translation.isEmpty {
+            TalkBubble(caption: herCaption, text: vt.translation, tailOnLeading: true) {
+                Button { vt.speak() } label: { Label("Replay", systemImage: "speaker.wave.2.fill") }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(red: 0.47, green: 0.40, blue: 0.86))
+            }
+        } else if let last = vt.history.last(where: { !$0.translation.isEmpty }) {
+            TalkBubble(caption: "Translation · \(last.to.name)", text: last.translation, tailOnLeading: true) {
+                Button { vt.replay(last) } label: { Label("Replay", systemImage: "speaker.wave.2.fill") }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(red: 0.47, green: 0.40, blue: 0.86))
+            }
+        } else if vt.errorMessage != nil {
+            TalkBubble(caption: "Hmm…", text: vt.permissionDenied ? "I can't hear you yet…" : "Something went wrong.",
+                       tailOnLeading: true)
+        } else if !vt.isRecording {
+            TalkBubble(caption: "Hi!", text: "Pick your languages below and tap the mic 👋", tailOnLeading: true)
         }
-        .task(id: spoken) { await vt.checkPacks(for: spoken) }
+    }
+
+    // MARK: Bottom (languages, mic, Live)
+    private var bottomBar: some View {
+        VStack(spacing: 10) {
+            Text(vt.status).font(.callout).opacity(0.75).lineLimit(1)
+
+            HStack(spacing: 10) {
+                Text("From").font(.callout).opacity(0.7)
+                langPicker($source)
+                Button {
+                    let s = source; source = target; target = s
+                } label: {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 30, height: 26)
+                }
+                .buttonStyle(.bordered)
+                .help("Swap languages")
+                Text("To").font(.callout).opacity(0.7)
+                langPicker($target)
+            }
+            .disabled(vt.isRecording)
+
+            micButton
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .center) {
+                    HStack(spacing: 14) {
+                        Toggle("Live", isOn: $live)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .disabled(vt.isRecording)
+                            .help("Live: keep listening and translate sentence by sentence")
+                        Button { showHistory.toggle() } label: {
+                            Label("History", systemImage: "clock.arrow.circlepath")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(textColor)
+                        .disabled(vt.history.isEmpty)
+                        .popover(isPresented: $showHistory, arrowEdge: .top) { historyList }
+                    }
+                    .fixedSize()
+                    .offset(x: 150)
+                }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+        .padding(.bottom, 18)
+    }
+
+    private func langPicker(_ selection: Binding<SpokenLang>) -> some View {
+        Picker("", selection: selection) {
+            ForEach(SpokenLang.allCases) { Text($0.label).tag($0) }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 170)
+    }
+
+    private var micButton: some View {
+        Button { vt.toggle(source, to: target, live: live) } label: {
+            ZStack {
+                Circle()
+                    .fill(vt.isRecording ? Color.red : textColor.opacity(0.18))
+                    .frame(width: 84, height: 84)
+                    .shadow(color: (vt.isRecording ? Color.red : .black).opacity(0.3), radius: 8, y: 3)
+                Image(systemName: vt.isRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(vt.isRecording ? Color.white : textColor)
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.space, modifiers: [])
+        .help(vt.isRecording ? (vt.liveActive ? "Stop live translation" : "Stop and translate")
+                             : (live ? "Start live translation" : "Start recording"))
     }
 
     private var historyList: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("History").font(.caption.weight(.semibold)).opacity(0.7)
+                Text("History").font(.headline)
                 Spacer()
-                Button("Clear") { vt.clearHistory() }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(textColor)
+                Button("Clear") { vt.clearHistory(); showHistory = false }
                     .disabled(vt.history.isEmpty)
             }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        if vt.history.isEmpty {
-                            Text("Finished sentences will appear here.")
-                                .opacity(0.45)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
                         ForEach(vt.history) { seg in
                             HStack(alignment: .top, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(seg.said).font(.callout).opacity(0.75)
+                                    Text(seg.said).font(.callout).foregroundStyle(.secondary)
                                     Text(seg.failed ? "⚠️ Couldn't translate" : (seg.translation.isEmpty ? "…" : seg.translation))
                                         .font(.body.weight(.medium))
                                 }
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                Button { vt.replay(seg) } label: {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                }
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(textColor)
-                                .disabled(seg.translation.isEmpty)
-                                .help("Replay")
+                                Button { vt.replay(seg) } label: { Image(systemName: "speaker.wave.2.fill") }
+                                    .buttonStyle(.borderless)
+                                    .disabled(seg.translation.isEmpty)
+                                    .help("Replay")
                             }
                             .id(seg.id)
-                            Divider().overlay(textColor.opacity(0.15))
+                            Divider()
                         }
                     }
-                    .padding(.trailing, 4)
                 }
-                .frame(height: 200)
+                .onAppear { if let last = vt.history.last?.id { proxy.scrollTo(last, anchor: .bottom) } }
                 .onChange(of: vt.history) { _, h in
-                    if let last = h.last?.id {
-                        withAnimation { proxy.scrollTo(last, anchor: .bottom) }
-                    }
+                    if let last = h.last?.id { withAnimation { proxy.scrollTo(last, anchor: .bottom) } }
                 }
             }
         }
-        .padding(12)
-        .background(textColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private func box(title: String, text: String, placeholder: String, replay: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.caption.weight(.semibold)).opacity(0.7)
-                Spacer()
-                if replay {
-                    Button { vt.speak() } label: {
-                        Label("Replay", systemImage: "speaker.wave.2.fill")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(textColor)
-                }
-            }
-            Text(text.isEmpty ? placeholder : text)
-                .font(.body)
-                .opacity(text.isEmpty ? 0.45 : 1)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
-        }
-        .padding(12)
-        .background(textColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .padding(14)
+        .frame(width: 380, height: 380)
     }
 }
 
-// Drives AvatarStage (AvatarView.swift) from VoiceTranslator state.
-struct AvatarCard: View {
+/// Mic level meter that polls the shared meter only while it's on screen.
+struct LiveLevel: View {
+    @State private var level: CGFloat = 0
+    var body: some View {
+        LevelBars(level: level, color: Color(red: 0.47, green: 0.40, blue: 0.86))
+            .task {
+                while !Task.isCancelled {
+                    level = level * 0.55 + min(1, CGFloat(micMeter.value) * 14) * 0.45
+                    try? await Task.sleep(for: .milliseconds(80))
+                }
+            }
+    }
+}
+
+// MARK: - Avatar driver: maps VoiceTranslator state to the figure's pose
+
+struct AvatarDriver: View {
     @ObservedObject var vt: VoiceTranslator
-    let textColor: Color
 
     @State private var mouth: CGFloat = 0
     @State private var blink: CGFloat = 0
     @State private var nod: CGFloat = 0
     @State private var level: CGFloat = 0
     @State private var thinkPhase = 0
+    @State private var gestureL = CGPoint(x: 42, y: 224)
+    @State private var gestureR = CGPoint(x: 158, y: 224)
     @State private var lastWordAt = Date.distantPast
     @State private var lastNodAt = Date.distantPast
     @State private var paused = false
@@ -999,44 +1128,48 @@ struct AvatarCard: View {
         return .idle
     }
 
-    private func expression(_ m: AvatarMood) -> (tilt: CGFloat, look: CGFloat, brow: CGFloat, smile: CGFloat) {
-        switch m {
-        case .idle:      return (0, 0, 0, 0.9)
-        case .listening: return (6, 0, 0.7, 0.5)
-        case .thinking:  return (-3, 1, 0.35, 0.3)
-        case .speaking:  return (0, 0, 0.3, 0.7)
-        case .concerned: return (-2, 0, -1, -0.5)
-        }
-    }
+    private struct Pose { var tilt, look, brow, smile: CGFloat; var l, r: CGPoint }
 
-    private var label: String {
-        switch mood {
-        case .idle:      return vt.liveActive ? "" : "Hi! Tap the mic and talk to me 👋"
-        case .listening: return "Listening…"
-        case .thinking:  return "Thinking…"
-        case .speaking:  return ""
-        case .concerned: return vt.permissionDenied ? "I can't hear you yet…" : "Hmm… something went wrong"
+    private func pose(_ m: AvatarMood) -> Pose {
+        let restL = CGPoint(x: 63, y: 249), restR = CGPoint(x: 137, y: 249)   // relaxed, arms by her sides
+        switch m {
+        case .idle:      return Pose(tilt: 0, look: 0, brow: 0, smile: 0.9, l: restL, r: restR)
+        case .listening: return Pose(tilt: 6, look: 0, brow: 0.7, smile: 0.5, l: restL, r: CGPoint(x: 154, y: 108))  // hand cupped at ear
+        case .thinking:  return Pose(tilt: -3, look: 1, brow: 0.35, smile: 0.3, l: restL, r: CGPoint(x: 110, y: 141)) // hand under chin
+        case .speaking:  return Pose(tilt: 0, look: 0, brow: 0.3, smile: 0.7, l: gestureL, r: gestureR)
+        case .concerned: return Pose(tilt: -2, look: 0, brow: -1, smile: -0.5,
+                                     l: CGPoint(x: 94, y: 226), r: CGPoint(x: 106, y: 226))            // hands clasped
         }
     }
 
     var body: some View {
         let m = mood
-        let e = expression(m)
-        AvatarStage(mood: m, mouth: mouth, tilt: e.tilt, lookUp: e.look, blink: blink,
-                    brow: e.brow, smile: e.smile, level: level, breathing: !paused, nod: nod,
-                    thinkingPhase: thinkPhase,
-                    bubbleText: m == .speaking ? vt.avatarSpeech : nil,
-                    highlight: vt.avatarWordRange, label: label, textColor: textColor)
-            .animation(.spring(response: 0.45, dampingFraction: 0.75), value: m)
-            .task(id: paused) { await blinkLoop() }
-            .task(id: "\(m)-\(paused)") { await moodLoop(m) }
-            .onChange(of: vt.transcript) { _, t in nodIfNeeded(t) }
-            .onChange(of: vt.avatarWordTick) { _, _ in wordPulse() }
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
-                guard let w = note.object as? NSWindow, !(w is NSPanel) else { return }
-                let hidden = !w.occlusionState.contains(.visible)
-                if hidden != paused { paused = hidden }
-            }
+        let p = pose(m)
+        // Slow breathing/sway at 12 fps keeps CPU low; paused when the window is hidden.
+        TimelineView(.animation(minimumInterval: 1.0 / 12, paused: paused)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            let bob = paused ? 0 : CGFloat(sin(t * 2 * .pi / 4.8)) * 2
+            let sway = paused ? 0 : sin(t * 2 * .pi / 6.5) * (m == .idle ? 1.4 : 0.6)
+            AvatarFigure(mouth: mouth, tilt: p.tilt, lookUp: p.look, blink: blink, brow: p.brow, smile: p.smile,
+                         waves: m == .listening ? max(0.15, level) : 0, handL: p.l, handR: p.r)
+                .equatable()            // skip redrawing the Canvas when only bob/sway change
+                .drawingGroup()         // rasterise once; bob/sway just move the cached layer
+                .offset(y: bob + nod)
+                .rotationEffect(.degrees(sway), anchor: .bottom)
+        }
+        .overlay(alignment: .topTrailing) {
+            if m == .thinking { ThoughtBubble(phase: thinkPhase).offset(x: 8, y: 6) }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: m)
+        .task(id: paused) { await blinkLoop() }
+        .task(id: "\(m)-\(paused)") { await moodLoop(m) }
+        .onChange(of: vt.transcript) { _, t in nodIfNeeded(t) }
+        .onChange(of: vt.avatarWordTick) { _, _ in wordPulse() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+            guard let w = note.object as? NSWindow, !(w is NSPanel) else { return }
+            let hidden = !w.occlusionState.contains(.visible)
+            if hidden != paused { paused = hidden }
+        }
     }
 
     private func blinkLoop() async {
@@ -1065,14 +1198,22 @@ struct AvatarCard: View {
                 try? await Task.sleep(for: .milliseconds(66))
             }
         case .speaking:
-            // Fallback syllable motion between word callbacks.
+            // Fallback syllable motion between word callbacks, plus hand gestures.
             var open = true
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
+                tick += 1
                 if Date().timeIntervalSince(lastWordAt) > 0.22 {
                     open.toggle()
                     withAnimation(.spring(response: 0.13, dampingFraction: 0.65)) {
                         mouth = open ? .random(in: 0.4...0.85) : .random(in: 0.05...0.2)
+                    }
+                }
+                if tick % 5 == 0 {
+                    withAnimation(.spring(response: 0.55, dampingFraction: 0.7)) {
+                        gestureL = CGPoint(x: .random(in: 34...50), y: .random(in: 212...238))
+                        gestureR = CGPoint(x: .random(in: 150...166), y: .random(in: 212...238))
                     }
                 }
             }
@@ -1112,6 +1253,7 @@ struct AvatarCard: View {
 struct GoodMorningApp: App {
     var body: some Scene {
         WindowGroup("Translator") { ContentView() }
-            .windowResizability(.contentSize)
+            .defaultSize(width: 980, height: 780)
+            .windowResizability(.contentMinSize)   // freely resizable, supports macOS full screen
     }
 }

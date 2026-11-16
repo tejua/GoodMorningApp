@@ -20,34 +20,45 @@ private extension Color {
     static let avTop       = Color(red: 0.62, green: 0.55, blue: 0.95)
     static let avTopDark   = Color(red: 0.47, green: 0.40, blue: 0.86)
     static let avAccent    = Color(red: 1.00, green: 0.55, blue: 0.68)
+    static let avSkirt     = Color(red: 0.36, green: 0.31, blue: 0.76)
+    static let avSkirtDark = Color(red: 0.24, green: 0.20, blue: 0.56)
+    static let avShoe      = Color(red: 0.56, green: 0.22, blue: 0.38)
 }
 
-/// The girl herself, drawn in a 200×200 design space. Animatable so SwiftUI
+/// The girl herself (full body), drawn in a 200×400 design space. Animatable so SwiftUI
 /// interpolates expression changes only while an animation is running.
-struct AvatarFigure: View, Animatable {
+struct AvatarFigure: View, Animatable, Equatable {
     var mouth: CGFloat = 0     // 0 closed … 1 wide open
     var tilt: CGFloat = 0      // head tilt in degrees
     var lookUp: CGFloat = 0    // 0 straight … 1 glancing up
     var blink: CGFloat = 0     // 0 open … 1 closed
     var brow: CGFloat = 0      // -1 concerned … 0 relaxed … 1 raised
     var smile: CGFloat = 0.8   // -1 frown … 1 big smile
-    var waves: CGFloat = 0     // 0 none … 1 loud (listening sound waves)
+    var waves: CGFloat = 0     // 0 none … 1 loud (listening sound waves by the cupped hand)
+    // Hand positions in design space; arms are solved with two-link IK.
+    var handL = CGPoint(x: 63, y: 249)
+    var handR = CGPoint(x: 137, y: 249)
 
-    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>,
-                                       AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>>> {
-        get { AnimatablePair(AnimatablePair(mouth, tilt),
-                             AnimatablePair(AnimatablePair(lookUp, blink), AnimatablePair(brow, smile))) }
+    typealias Face = AnimatablePair<AnimatablePair<CGFloat, CGFloat>,
+                                    AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>>>
+    var animatableData: AnimatablePair<Face, AnimatablePair<CGPoint.AnimatableData, CGPoint.AnimatableData>> {
+        get { AnimatablePair(AnimatablePair(AnimatablePair(mouth, tilt),
+                                            AnimatablePair(AnimatablePair(lookUp, blink), AnimatablePair(brow, smile))),
+                             AnimatablePair(handL.animatableData, handR.animatableData)) }
         set {
-            mouth = newValue.first.first; tilt = newValue.first.second
-            lookUp = newValue.second.first.first; blink = newValue.second.first.second
-            brow = newValue.second.second.first; smile = newValue.second.second.second
+            let f = newValue.first
+            mouth = f.first.first; tilt = f.first.second
+            lookUp = f.second.first.first; blink = f.second.first.second
+            brow = f.second.second.first; smile = f.second.second.second
+            handL.animatableData = newValue.second.first
+            handR.animatableData = newValue.second.second
         }
     }
 
     var body: some View {
         Canvas { ctx, size in
-            let s = min(size.width, size.height) / 200
-            ctx.translateBy(x: (size.width - 200 * s) / 2, y: (size.height - 200 * s) / 2)
+            let s = min(size.width / 200, size.height / 400)
+            ctx.translateBy(x: (size.width - 200 * s) / 2, y: (size.height - 400 * s) / 2)
             ctx.scaleBy(x: s, y: s)
             draw(&ctx)
         }
@@ -84,20 +95,65 @@ struct AvatarFigure: View, Animatable {
         fall.closeSubpath()
         back.fill(fall, with: hairFill)
 
-        // ---- Body (not tilted)
+        // ---- Legs, socks and shoes
+        for x in [CGFloat(90), 110] {
+            var leg = Path(); leg.move(to: CGPoint(x: x, y: 288)); leg.addLine(to: CGPoint(x: x, y: 360))
+            base.stroke(leg, with: .color(.avSkinShade), style: StrokeStyle(lineWidth: 13, lineCap: .round))
+            base.stroke(leg, with: .color(.avSkin), style: StrokeStyle(lineWidth: 11.4, lineCap: .round))
+            var sock = Path(); sock.move(to: CGPoint(x: x, y: 346)); sock.addLine(to: CGPoint(x: x, y: 362))
+            base.stroke(sock, with: .color(.white), style: StrokeStyle(lineWidth: 12.6, lineCap: .butt))
+            let sx = x < 100 ? x - 4 : x + 4
+            let shoe = Path(roundedRect: CGRect(x: sx - 12, y: 359, width: 24, height: 12), cornerRadius: 6)
+            base.fill(shoe, with: .linearGradient(Gradient(colors: [.avShoe.opacity(0.85), .avShoe]),
+                                                  startPoint: CGPoint(x: sx, y: 359), endPoint: CGPoint(x: sx, y: 371)))
+            var strap = Path(); strap.move(to: CGPoint(x: x - 6, y: 361)); strap.addLine(to: CGPoint(x: x + 6, y: 361))
+            base.stroke(strap, with: .color(.avShoe), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+            base.fill(ellipse(sx + (x < 100 ? -5 : 5), 362.5, 3.5, 1.6), with: .color(.white.opacity(0.35)))
+        }
+        // soft ground shadow
+        var ground = base
+        ground.addFilter(.blur(radius: 4))
+        ground.fill(ellipse(100, 374, 34, 4), with: .color(.black.opacity(0.18)))
+
+        // ---- Skirt (A-line, knee length)
+        var skirt = Path()
+        skirt.move(to: CGPoint(x: 80, y: 234))
+        skirt.addLine(to: CGPoint(x: 120, y: 234))
+        skirt.addCurve(to: CGPoint(x: 148, y: 300), control1: CGPoint(x: 132, y: 252), control2: CGPoint(x: 143, y: 280))
+        skirt.addQuadCurve(to: CGPoint(x: 52, y: 300), control: CGPoint(x: 100, y: 314))
+        skirt.addCurve(to: CGPoint(x: 80, y: 234), control1: CGPoint(x: 57, y: 280), control2: CGPoint(x: 68, y: 252))
+        skirt.closeSubpath()
+        base.fill(skirt, with: .linearGradient(Gradient(colors: [.avSkirt, .avSkirtDark]),
+                                               startPoint: CGPoint(x: 100, y: 234), endPoint: CGPoint(x: 100, y: 308)))
+        for (a, b) in [(CGPoint(x: 90, y: 240), CGPoint(x: 78, y: 304)), (CGPoint(x: 100, y: 240), CGPoint(x: 100, y: 307)),
+                       (CGPoint(x: 110, y: 240), CGPoint(x: 122, y: 304))] {
+            var pleat = Path(); pleat.move(to: a); pleat.addLine(to: b)
+            base.stroke(pleat, with: .color(.white.opacity(0.12)), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+        }
+        var hem = Path()
+        hem.move(to: CGPoint(x: 148, y: 300))
+        hem.addQuadCurve(to: CGPoint(x: 52, y: 300), control: CGPoint(x: 100, y: 314))
+        base.stroke(hem, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+
+        // ---- Neck and top (not tilted)
         let neck = Path(roundedRect: CGRect(x: 89, y: 122, width: 22, height: 40), cornerRadius: 8)
         base.fill(neck, with: .linearGradient(Gradient(colors: [.avSkinShade, .avSkin]),
                                               startPoint: CGPoint(x: 100, y: 122), endPoint: CGPoint(x: 100, y: 150)))
         var top = Path()
-        top.move(to: CGPoint(x: 26, y: 204))
-        top.addCurve(to: CGPoint(x: 66, y: 158), control1: CGPoint(x: 28, y: 178), control2: CGPoint(x: 44, y: 162))
-        top.addLine(to: CGPoint(x: 86, y: 152))
-        top.addQuadCurve(to: CGPoint(x: 114, y: 152), control: CGPoint(x: 100, y: 170))
-        top.addLine(to: CGPoint(x: 134, y: 158))
-        top.addCurve(to: CGPoint(x: 174, y: 204), control1: CGPoint(x: 156, y: 162), control2: CGPoint(x: 172, y: 178))
+        top.move(to: CGPoint(x: 86, y: 152))
+        top.addLine(to: CGPoint(x: 72, y: 157))
+        top.addQuadCurve(to: CGPoint(x: 64, y: 172), control: CGPoint(x: 65, y: 159))
+        top.addCurve(to: CGPoint(x: 79, y: 238), control1: CGPoint(x: 64, y: 200), control2: CGPoint(x: 74, y: 222))
+        top.addLine(to: CGPoint(x: 121, y: 238))
+        top.addCurve(to: CGPoint(x: 136, y: 172), control1: CGPoint(x: 126, y: 222), control2: CGPoint(x: 136, y: 200))
+        top.addQuadCurve(to: CGPoint(x: 128, y: 157), control: CGPoint(x: 135, y: 159))
+        top.addLine(to: CGPoint(x: 114, y: 152))
+        top.addQuadCurve(to: CGPoint(x: 86, y: 152), control: CGPoint(x: 100, y: 170))
         top.closeSubpath()
         base.fill(top, with: .linearGradient(Gradient(colors: [.avTop, .avTopDark]),
-                                             startPoint: CGPoint(x: 100, y: 150), endPoint: CGPoint(x: 100, y: 204)))
+                                             startPoint: CGPoint(x: 100, y: 150), endPoint: CGPoint(x: 100, y: 238)))
+        base.fill(Path(roundedRect: CGRect(x: 78, y: 230, width: 44, height: 8), cornerRadius: 3), with: .color(.avSkirtDark))
+        base.fill(Path(roundedRect: CGRect(x: 96, y: 230.5, width: 8, height: 7), cornerRadius: 2), with: .color(.avAccent))
         // neckline trim
         var trim = Path()
         trim.move(to: CGPoint(x: 86, y: 152))
@@ -180,18 +236,51 @@ struct AvatarFigure: View, Animatable {
         shine.addQuadCurve(to: CGPoint(x: 98, y: 52), control: CGPoint(x: 84, y: 53))
         ctx.stroke(shine, with: .color(.white.opacity(0.25)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
 
-        // listening sound waves by the right ear
+        // ---- Arms (in front of body and hair)
+        drawArm(&base, shoulder: CGPoint(x: 71, y: 166), hand: handL, side: -1)
+        drawArm(&base, shoulder: CGPoint(x: 129, y: 166), hand: handR, side: 1)
+
+        // listening sound waves next to the cupped hand
         if waves > 0.01 {
             for i in 0..<3 {
                 let strength = min(1, max(0, waves * 3 - CGFloat(i)))
                 guard strength > 0 else { continue }
                 var arc = Path()
-                arc.addArc(center: CGPoint(x: 152, y: 99), radius: 9 + CGFloat(i) * 6,
-                           startAngle: .degrees(-38), endAngle: .degrees(38), clockwise: false)
-                ctx.stroke(arc, with: .color(Color.avAccent.opacity(0.35 + 0.6 * Double(strength))),
-                           style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+                arc.addArc(center: CGPoint(x: handR.x + 6, y: handR.y - 2), radius: 11 + CGFloat(i) * 6,
+                           startAngle: .degrees(-40), endAngle: .degrees(40), clockwise: false)
+                base.stroke(arc, with: .color(Color.avAccent.opacity(0.35 + 0.6 * Double(strength))),
+                            style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
             }
         }
+    }
+
+    private func drawArm(_ ctx: inout GraphicsContext, shoulder S: CGPoint, hand T: CGPoint, side: CGFloat) {
+        let l1: CGFloat = 44, l2: CGFloat = 42
+        let dx = T.x - S.x, dy = T.y - S.y
+        let d = min(l1 + l2 - 0.5, max(abs(l1 - l2) + 4, (dx * dx + dy * dy).squareRoot()))
+        let theta = atan2(dy, dx)
+        let H = CGPoint(x: S.x + d * cos(theta), y: S.y + d * sin(theta))
+        let a = acos(min(1, max(-1, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d))))
+        let e1 = CGPoint(x: S.x + l1 * cos(theta + a), y: S.y + l1 * sin(theta + a))
+        let e2 = CGPoint(x: S.x + l1 * cos(theta - a), y: S.y + l1 * sin(theta - a))
+        // Prefer the lower elbow, then the one pointing away from the body (natural, no 'chicken wings').
+        func score(_ e: CGPoint) -> CGFloat { e.y + side * (e.x - S.x) * 0.6 }
+        let E = score(e1) >= score(e2) ? e1 : e2
+        var arm = Path(); arm.move(to: S); arm.addLine(to: E); arm.addLine(to: H)
+        ctx.stroke(arm, with: .color(.avSkinShade), style: StrokeStyle(lineWidth: 11.6, lineCap: .round, lineJoin: .round))
+        ctx.stroke(arm, with: .color(.avSkin), style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+        // puff sleeve
+        var sleeve = Path(); sleeve.move(to: S)
+        sleeve.addLine(to: CGPoint(x: S.x + (E.x - S.x) * 0.42, y: S.y + (E.y - S.y) * 0.42))
+        ctx.stroke(sleeve, with: .color(.avTopDark), style: StrokeStyle(lineWidth: 18.5, lineCap: .round))
+        ctx.stroke(sleeve, with: .color(.avTop), style: StrokeStyle(lineWidth: 17, lineCap: .round))
+        // hand with a little thumb
+        let thumb = ellipse(H.x - side * 5.5, H.y - 2.5, 3.4, 2.6)
+        ctx.fill(thumb, with: .color(.avSkin))
+        ctx.stroke(thumb, with: .color(.avSkinShade), lineWidth: 0.8)
+        let palm = ellipse(H.x, H.y, 7, 7.5)
+        ctx.fill(palm, with: .color(.avSkin))
+        ctx.stroke(palm, with: .color(.avSkinShade), lineWidth: 0.9)
     }
 
     private func drawEye(_ ctx: inout GraphicsContext, cx: CGFloat, cy: CGFloat, side: CGFloat) {
@@ -267,117 +356,98 @@ struct AvatarFigure: View, Animatable {
     }
 }
 
-/// Avatar card + speech/thought bubbles + label. Purely presentational.
-struct AvatarStage: View {
-    var mood: AvatarMood
-    var mouth: CGFloat
-    var tilt: CGFloat
-    var lookUp: CGFloat
-    var blink: CGFloat
-    var brow: CGFloat
-    var smile: CGFloat
-    var level: CGFloat
-    var breathing: Bool = false   // gentle bob, 20 fps TimelineView (paused when false)
-    var nod: CGFloat = 0
-    var thinkingPhase: Int
-    var bubbleText: String?
-    var highlight: NSRange?
-    var label: String
-    var textColor: Color
-
+/// Three bouncing dots in a little cloud (thinking).
+struct ThoughtBubble: View {
+    var phase: Int
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 22)
-                    .fill(LinearGradient(colors: [Color(red: 1.0, green: 0.86, blue: 0.90),
-                                                  Color(red: 0.84, green: 0.82, blue: 1.0)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                if mood == .listening {
-                    Circle()
-                        .stroke(Color.white.opacity(0.55), lineWidth: 3)
-                        .frame(width: 150 + level * 30, height: 150 + level * 30)
-                        .opacity(0.25 + Double(level) * 0.6)
-                }
-                TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !breathing)) { tl in
-                    let t = tl.date.timeIntervalSinceReferenceDate
-                    let bob = breathing ? CGFloat(sin(t * 2 * .pi / 4.8)) * 2 : 0
-                    AvatarFigure(mouth: mouth, tilt: tilt, lookUp: lookUp, blink: blink,
-                                 brow: brow, smile: smile, waves: mood == .listening ? max(0.15, level) : 0)
-                        .frame(width: 186, height: 186)
-                        .offset(y: 8 + bob + nod)
-                }
-            }
-            .frame(width: 190, height: 190)
-            .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(alignment: .topTrailing) {
-                if mood == .thinking { thoughtBubble.padding(10) }
-            }
-            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
-
-            VStack(alignment: .leading, spacing: 8) {
-                if let text = bubbleText, !text.isEmpty {
-                    speechBubble(text)
-                } else {
-                    Text(label)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(textColor)
-                    if mood == .listening {
-                        levelBar
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var levelBar: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<8, id: \.self) { i in
-                Capsule()
-                    .fill(textColor.opacity(CGFloat(i) / 8 < level ? 0.9 : 0.2))
-                    .frame(width: 5, height: 6 + CGFloat(i % 4) * 4)
-            }
-        }
-    }
-
-    private var thoughtBubble: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
                     .fill(Color(red: 0.47, green: 0.40, blue: 0.86))
-                    .frame(width: 6, height: 6)
-                    .scaleEffect(thinkingPhase % 3 == i ? 1.35 : 0.8)
-                    .opacity(thinkingPhase % 3 == i ? 1 : 0.5)
+                    .frame(width: 8, height: 8)
+                    .scaleEffect(phase % 3 == i ? 1.35 : 0.8)
+                    .opacity(phase % 3 == i ? 1 : 0.5)
             }
         }
-        .padding(.horizontal, 9).padding(.vertical, 7)
+        .padding(.horizontal, 12).padding(.vertical, 9)
         .background(Capsule().fill(.white))
         .overlay(alignment: .bottomLeading) {
-            Circle().fill(.white).frame(width: 7, height: 7).offset(x: -2, y: 8)
+            Circle().fill(.white).frame(width: 9, height: 9).offset(x: -3, y: 10)
         }
-        .animation(.easeInOut(duration: 0.25), value: thinkingPhase)
+        .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+        .animation(.easeInOut(duration: 0.25), value: phase)
     }
+}
 
-    private func speechBubble(_ text: String) -> some View {
+/// Small mic level meter.
+struct LevelBars: View {
+    var level: CGFloat
+    var color: Color
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<8, id: \.self) { i in
+                Capsule()
+                    .fill(color.opacity(CGFloat(i) / 8 < level ? 0.9 : 0.25))
+                    .frame(width: 4, height: 5 + CGFloat(i % 4) * 3)
+            }
+        }
+    }
+}
+
+/// Speech bubble with a tail pointing at the avatar and optional word highlight.
+struct TalkBubble<Accessory: View>: View {
+    var caption: String
+    var text: String
+    var highlight: NSRange? = nil
+    var tailOnLeading: Bool
+    var dim = false
+    @ViewBuilder var accessory: () -> Accessory
+
+    private let ink = Color(red: 0.16, green: 0.12, blue: 0.22)
+    private let paper = Color.white.opacity(0.95)
+
+    var body: some View {
         var attr = AttributedString(text)
         if let r = highlight, let range = Range(r, in: text),
            let lower = AttributedString.Index(range.lowerBound, within: attr),
            let upper = AttributedString.Index(range.upperBound, within: attr) {
             attr[lower..<upper].backgroundColor = Color(red: 1.0, green: 0.86, blue: 0.45)
-            attr[lower..<upper].font = .body.weight(.bold)
+            attr[lower..<upper].font = .title3.weight(.bold)
         }
-        return Text(attr)
-            .font(.body)
-            .foregroundStyle(Color(red: 0.16, green: 0.12, blue: 0.22))
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14).fill(.white.opacity(0.95)))
-            .overlay(alignment: .leading) {
-                Path { p in
-                    p.move(to: CGPoint(x: 0, y: 0)); p.addLine(to: CGPoint(x: -9, y: 7)); p.addLine(to: CGPoint(x: 0, y: 14))
-                }
-                .fill(.white.opacity(0.95))
-                .frame(width: 1, height: 14)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(caption).font(.caption.weight(.semibold)).foregroundStyle(ink.opacity(0.55))
+                Spacer(minLength: 4)
+                accessory()
             }
+            Text(attr)
+                .font(.title3)
+                .foregroundStyle(ink.opacity(dim ? 0.5 : 1))
+                .lineLimit(9)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 18).fill(paper))
+        .overlay(alignment: tailOnLeading ? .topLeading : .topTrailing) {
+            Path { p in
+                if tailOnLeading {
+                    p.move(to: CGPoint(x: 0, y: 0)); p.addLine(to: CGPoint(x: -12, y: 10)); p.addLine(to: CGPoint(x: 0, y: 20))
+                } else {
+                    p.move(to: CGPoint(x: 0, y: 0)); p.addLine(to: CGPoint(x: 12, y: 10)); p.addLine(to: CGPoint(x: 0, y: 20))
+                }
+            }
+            .fill(paper)
+            .frame(width: 1, height: 20)
+            .offset(y: 26)
+        }
+        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+    }
+}
+
+extension TalkBubble where Accessory == EmptyView {
+    init(caption: String, text: String, highlight: NSRange? = nil, tailOnLeading: Bool, dim: Bool = false) {
+        self.init(caption: caption, text: text, highlight: highlight, tailOnLeading: tailOnLeading, dim: dim) { EmptyView() }
     }
 }
