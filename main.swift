@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import Speech
+import AVFoundation
+import Translation
 
 // Stores a Color in UserDefaults as a hex string so choices survive relaunch.
 extension Color {
@@ -72,10 +75,16 @@ struct ContentView: View {
                 .foregroundStyle(.primary)
                 .padding(.top, 8)
             }
+
+            Divider()
+                .overlay(Color(hex: textHex).opacity(0.3))
+                .padding(.vertical, 6)
+
+            VoiceTranslateView(textColor: Color(hex: textHex))
         }
         .foregroundStyle(Color(hex: textHex))
         .padding(40)
-        .frame(minWidth: 480, minHeight: 320)
+        .frame(minWidth: 520, minHeight: 560)
         .background(Color(hex: bgHex))
         .overlay(alignment: .topTrailing) {
             Button {
@@ -90,6 +99,330 @@ struct ContentView: View {
             .padding(12)
         }
         .onReceive(timer) { now = $0 }
+    }
+}
+
+// MARK: - Voice translation (all on-device Apple frameworks)
+
+enum SpokenLang: String, CaseIterable, Identifiable {
+    case english, hindi
+    var id: String { rawValue }
+    var label: String { self == .english ? "English" : "हिन्दी Hindi" }
+    var name: String { self == .english ? "English" : "Hindi" }
+    var speechLocales: [String] { self == .english ? ["en-IN", "en-US"] : ["hi-IN"] }
+    var language: Locale.Language { Locale.Language(identifier: self == .english ? "en" : "hi") }
+    var voiceCodes: [String] { self == .english ? ["en-IN", "en-US"] : ["hi-IN"] }
+    var other: SpokenLang { self == .english ? .hindi : .english }
+}
+
+@MainActor
+final class VoiceTranslator: ObservableObject {
+    @Published var isRecording = false
+    @Published var transcript = ""
+    @Published var translation = ""
+    @Published var status = "Tap the mic and speak"
+    @Published var errorMessage: String?
+    @Published var permissionDenied = false
+    @Published var config: TranslationSession.Configuration?
+    @Published var packMissing = false
+
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private let synth = AVSpeechSynthesizer()
+    private(set) var source: SpokenLang = .english
+    private var pendingText = ""
+    private var prepareOnly = false
+    private var finished = true
+    private var session = 0
+
+    // MARK: Permissions
+    nonisolated static func requestPermissions() async -> (mic: Bool, speech: Bool) {
+        let speech: Bool = await withCheckedContinuation { cont in
+            SFSpeechRecognizer.requestAuthorization { cont.resume(returning: $0 == .authorized) }
+        }
+        let mic: Bool = await withCheckedContinuation { cont in
+            AVCaptureDevice.requestAccess(for: .audio) { cont.resume(returning: $0) }
+        }
+        return (mic, speech)
+    }
+
+    func toggle(_ lang: SpokenLang) {
+        if isRecording { stop() } else { Task { await start(lang) } }
+    }
+
+    // MARK: Recording
+    func start(_ lang: SpokenLang) async {
+        errorMessage = nil
+        permissionDenied = false
+        let perms = await Self.requestPermissions()
+        guard perms.mic, perms.speech else {
+            permissionDenied = true
+            errorMessage = !perms.mic
+                ? "Microphone access is off. Allow Good Morning in System Settings › Privacy & Security › Microphone."
+                : "Speech Recognition access is off. Allow Good Morning in System Settings › Privacy & Security › Speech Recognition."
+            status = "Permission needed"
+            return
+        }
+        guard let rec = lang.speechLocales.lazy
+            .compactMap({ SFSpeechRecognizer(locale: Locale(identifier: $0)) })
+            .first, rec.isAvailable else {
+            errorMessage = "\(lang.name) speech recognition isn't available on this Mac right now."
+            return
+        }
+        synth.stopSpeaking(at: .immediate)
+        source = lang
+        transcript = ""
+        translation = ""
+        finished = false
+        session += 1
+        let mySession = session
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        req.addsPunctuation = true
+        if rec.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+        request = req
+
+        do {
+            task = try Self.startAudio(engine: engine, recognizer: rec, request: req) { [weak self] text, isFinal, error in
+                Task { @MainActor in
+                    self?.handle(text: text, isFinal: isFinal, error: error, session: mySession)
+                }
+            }
+        } catch {
+            errorMessage = "Couldn't start the microphone: \(error.localizedDescription)"
+            return
+        }
+        isRecording = true
+        status = rec.supportsOnDeviceRecognition ? "Listening (on-device)… tap to stop" : "Listening… tap to stop"
+    }
+
+    // Kept nonisolated so audio/recognition callbacks (background threads) don't inherit MainActor.
+    nonisolated static func startAudio(engine: AVAudioEngine,
+                                       recognizer: SFSpeechRecognizer,
+                                       request: SFSpeechAudioBufferRecognitionRequest,
+                                       onResult: @escaping @Sendable (String?, Bool, Error?) -> Void) throws -> SFSpeechRecognitionTask {
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw NSError(domain: "GoodMorning", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "No microphone input found."])
+        }
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+        }
+        engine.prepare()
+        try engine.start()
+        return recognizer.recognitionTask(with: request) { result, error in
+            onResult(result?.bestTranscription.formattedString, result?.isFinal ?? false, error)
+        }
+    }
+
+    func stop() {
+        guard isRecording else { return }
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        isRecording = false
+        status = "Translating…"
+        let mySession = session
+        // Don't wait long for the "final" result: use the latest text after a short grace period.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            if self.session == mySession { self.finish() }
+        }
+    }
+
+    private func handle(text: String?, isFinal: Bool, error: Error?, session s: Int) {
+        guard s == session, !finished else { return }
+        if let text, !text.isEmpty { transcript = text }
+        if isFinal {
+            if isRecording { stop() }
+            finish()
+        } else if error != nil {
+            if isRecording { stop() }
+            finish()
+        }
+    }
+
+    private func finish() {
+        guard !finished else { return }
+        finished = true
+        task?.cancel()
+        task = nil
+        request = nil
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            status = "Didn't catch that. Try again."
+            return
+        }
+        translate(text)
+    }
+
+    // MARK: Translation
+    private func trigger() {
+        let wanted = TranslationSession.Configuration(source: source.language, target: source.other.language)
+        if config?.source == wanted.source && config?.target == wanted.target {
+            config?.invalidate()
+        } else {
+            config = wanted
+        }
+    }
+
+    func translate(_ text: String) {
+        pendingText = text
+        prepareOnly = false
+        trigger()
+    }
+
+    func downloadPacks(for lang: SpokenLang) {
+        source = lang
+        prepareOnly = true
+        trigger()
+    }
+
+    func checkPacks(for lang: SpokenLang) async {
+        let status = await LanguageAvailability().status(from: lang.language, to: lang.other.language)
+        packMissing = (status == .supported)
+    }
+
+    func run(_ session: TranslationSession) async {
+        if prepareOnly {
+            prepareOnly = false
+            do {
+                try await session.prepareTranslation()
+                status = "Languages ready. Tap the mic and speak"
+                packMissing = false
+            } catch {
+                errorMessage = "Language download didn't finish: \(error.localizedDescription)"
+            }
+            return
+        }
+        let text = pendingText
+        guard !text.isEmpty else { return }
+        do {
+            let response = try await session.translate(text)
+            translation = response.targetText
+            status = "Done"
+            packMissing = false
+            speak()
+        } catch {
+            status = "Translation failed"
+            errorMessage = "Couldn't translate: \(error.localizedDescription). You may need to download English and Hindi in System Settings › General › Language & Region › Translation Languages."
+        }
+    }
+
+    // MARK: Speech output
+    func speak() {
+        guard !translation.isEmpty else { return }
+        synth.stopSpeaking(at: .immediate)
+        let target = source.other
+        let utterance = AVSpeechUtterance(string: translation)
+        utterance.voice = target.voiceCodes.lazy.compactMap { AVSpeechSynthesisVoice(language: $0) }.first
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        synth.speak(utterance)
+    }
+}
+
+struct VoiceTranslateView: View {
+    @StateObject private var vt = VoiceTranslator()
+    @AppStorage("spokenLang") private var spoken: SpokenLang = .english
+    let textColor: Color
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Voice translate").font(.title3.weight(.semibold))
+
+            HStack(spacing: 8) {
+                Text("I'm speaking")
+                Picker("", selection: $spoken) {
+                    ForEach(SpokenLang.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+                .disabled(vt.isRecording)
+                Image(systemName: "arrow.right")
+                Text(spoken.other.name).fontWeight(.semibold)
+            }
+
+            Button { vt.toggle(spoken) } label: {
+                ZStack {
+                    Circle()
+                        .fill(vt.isRecording ? Color.red : textColor.opacity(0.18))
+                        .frame(width: 78, height: 78)
+                    Image(systemName: vt.isRecording ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundStyle(vt.isRecording ? Color.white : textColor)
+                }
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.space, modifiers: [])
+            .help(vt.isRecording ? "Stop and translate" : "Start recording")
+
+            Text(vt.status).font(.callout).opacity(0.75)
+
+            if vt.packMissing {
+                Button("Download \(spoken.name) → \(spoken.other.name) for offline translation") {
+                    vt.downloadPacks(for: spoken)
+                }
+                .font(.callout)
+            }
+
+            if let err = vt.errorMessage {
+                VStack(spacing: 6) {
+                    Text(err).font(.callout).multilineTextAlignment(.center)
+                    if vt.permissionDenied {
+                        Button("Open Privacy Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity)
+                .background(Color.orange.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            box(title: "You said (\(vt.isRecording ? spoken.name : vt.source.name))",
+                text: vt.transcript, placeholder: "Your words will appear here…")
+            box(title: "Translation (\(vt.isRecording ? spoken.other.name : vt.source.other.name))",
+                text: vt.translation, placeholder: "The translation will appear and be spoken here…",
+                replay: !vt.translation.isEmpty)
+        }
+        .frame(width: 440)
+        .translationTask(vt.config) { session in
+            await vt.run(session)
+        }
+        .task(id: spoken) { await vt.checkPacks(for: spoken) }
+    }
+
+    @ViewBuilder
+    private func box(title: String, text: String, placeholder: String, replay: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.caption.weight(.semibold)).opacity(0.7)
+                Spacer()
+                if replay {
+                    Button { vt.speak() } label: {
+                        Label("Replay", systemImage: "speaker.wave.2.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(textColor)
+                }
+            }
+            Text(text.isEmpty ? placeholder : text)
+                .font(.body)
+                .opacity(text.isEmpty ? 0.45 : 1)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+        }
+        .padding(12)
+        .background(textColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
