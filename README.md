@@ -1,10 +1,24 @@
 # Good Morning App
 
-A tiny SwiftUI macOS app that greets you based on the time of day (morning, afternoon, evening, night), shows your Mac's name and a live clock, and lets you pick background and text colours (saved between launches).
+A small SwiftUI macOS **Translator** app: speak English or Hindi and an animated girl listens, translates and speaks the translation back. Use the palette button (top right) to pick background and text colours (saved between launches).
+
+(The app is still called **Good Morning.app**. Earlier versions showed a time-based greeting, your Mac's name and a clock; from v1.4 the Mac app is just the translator. The iOS app below still has them.)
 
 ## Voice translate (English ⇄ Hindi)
 
 Pick the language you're speaking (English or Hindi), tap the mic (or press Space), and talk. Recording stops by itself after 2 seconds of silence (or tap stop / press Space any time); if nothing is heard for 8 seconds it stops without translating. The app shows a live transcript, translates it into the other language and speaks the translation aloud. Use **Replay** to hear it again.
+
+### Animated avatar (Mac)
+
+A cartoon girl, drawn entirely in SwiftUI, reacts to what's happening:
+
+- **Idle:** breathes gently, blinks and smiles.
+- **Listening:** tilts her head, raises her eyebrows, shows sound waves that follow your mic level, and nods as words come in.
+- **Thinking:** glances up while a thought bubble animates.
+- **Speaking:** lip-syncs to the spoken translation, with a speech bubble that highlights the current word.
+- **Problem** (for example, permission denied): looks a little concerned.
+
+Turn her off or on with the **Avatar** switch next to the title. Her animation pauses when the window is hidden.
 
 ### Live mode (Mac)
 
@@ -31,7 +45,7 @@ On first use macOS asks for **Microphone** and **Speech Recognition** access. Th
 ./build.sh
 ```
 
-This compiles `main.swift` with `swiftc` into `~/Desktop/Good Morning.app` and opens it. Requires macOS 15+ and Xcode command line tools.
+This compiles `main.swift` and `AvatarView.swift` with `swiftc` into `~/Desktop/Good Morning.app` and opens it. Requires macOS 15+ and Xcode command line tools.
 
 ## iPhone / iPad (iOS) app
 

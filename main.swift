@@ -24,13 +24,9 @@ extension Color {
 }
 
 struct ContentView: View {
-    @State private var now = Date()
     @AppStorage("bgColor") private var bgHex = "1E1E2EFF"
     @AppStorage("textColor") private var textHex = "FFFFFFFF"
     @State private var showOptions = false
-
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    private let deviceName = Host.current().localizedName ?? "this Mac"
 
     private var bgColor: Binding<Color> {
         Binding(get: { Color(hex: bgHex) }, set: { bgHex = $0.hex })
@@ -39,28 +35,8 @@ struct ContentView: View {
         Binding(get: { Color(hex: textHex) }, set: { textHex = $0.hex })
     }
 
-    private var greeting: String {
-        switch Calendar.current.component(.hour, from: now) {
-        case 5..<12:  return "Good morning! ☀️"
-        case 12..<17: return "Good afternoon! 🌤️"
-        case 17..<21: return "Good evening! 🌇"
-        default:      return "Good night! 🌙"
-        }
-    }
-
     var body: some View {
         VStack(spacing: 14) {
-            Text(greeting)
-                .font(.system(size: 40, weight: .bold, design: .rounded))
-            Text(deviceName)
-                .font(.title2)
-                .opacity(0.75)
-            Text(now, format: .dateTime.hour().minute().second())
-                .font(.system(size: 56, weight: .semibold, design: .monospaced))
-            Text(now, format: .dateTime.weekday(.wide).day().month(.wide).year())
-                .font(.headline)
-                .opacity(0.75)
-
             if showOptions {
                 VStack(spacing: 10) {
                     ColorPicker("Background colour", selection: bgColor, supportsOpacity: false)
@@ -73,18 +49,14 @@ struct ContentView: View {
                 .frame(width: 280)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .foregroundStyle(.primary)
-                .padding(.top, 8)
             }
-
-            Divider()
-                .overlay(Color(hex: textHex).opacity(0.3))
-                .padding(.vertical, 6)
 
             VoiceTranslateView(textColor: Color(hex: textHex))
         }
         .foregroundStyle(Color(hex: textHex))
-        .padding(40)
-        .frame(minWidth: 520, minHeight: 560)
+        .padding(.horizontal, 40)
+        .padding(.vertical, 32)
+        .frame(minWidth: 580, minHeight: 520)
         .background(Color(hex: bgHex))
         .overlay(alignment: .topTrailing) {
             Button {
@@ -98,7 +70,6 @@ struct ContentView: View {
             .help("Colour options")
             .padding(12)
         }
-        .onReceive(timer) { now = $0 }
     }
 }
 
@@ -134,9 +105,24 @@ final class LiveAudioSink: @unchecked Sendable {
 
 final class SpeechDoneDelegate: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     var onDone: (() -> Void)?
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { onDone?() }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { onDone?() }
+    // Avatar hooks (lip-sync); they don't affect translation/Live logic.
+    var onStart: ((AVSpeechUtterance) -> Void)?
+    var onWord: ((AVSpeechUtterance, NSRange) -> Void)?
+    var onEnd: ((AVSpeechUtterance) -> Void)?
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) { onStart?(utterance) }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) { onWord?(utterance, characterRange) }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { onDone?(); onEnd?(utterance) }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { onDone?(); onEnd?(utterance) }
 }
+
+// Latest mic RMS, written from the audio tap and polled by the avatar (~15×/s) while listening.
+final class LevelMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: Float = 0
+    func set(_ x: Float) { lock.lock(); v = x; lock.unlock() }
+    var value: Float { lock.lock(); defer { lock.unlock() }; return v }
+}
+let micMeter = LevelMeter()
 
 struct LiveSegment: Identifiable, Equatable {
     let id = UUID()
@@ -204,9 +190,42 @@ final class VoiceTranslator: ObservableObject {
     private var liveSpeaking = false
     private let speechDelegate = SpeechDoneDelegate()
 
+    // Avatar state (read-only hooks into the synthesizer)
+    @Published var avatarSpeaking = false
+    @Published var avatarSpeech = ""
+    @Published var avatarWordRange: NSRange?
+    @Published var avatarWordTick = 0
+    private var avatarUtterance: ObjectIdentifier?
+
     init() {
         speechDelegate.onDone = { [weak self] in
             Task { @MainActor in self?.liveSpeechDone() }
+        }
+        speechDelegate.onStart = { [weak self] u in
+            let id = ObjectIdentifier(u), text = u.speechString
+            Task { @MainActor in
+                self?.avatarUtterance = id
+                self?.avatarSpeech = text
+                self?.avatarWordRange = nil
+                self?.avatarSpeaking = true
+            }
+        }
+        speechDelegate.onWord = { [weak self] u, range in
+            let id = ObjectIdentifier(u)
+            Task { @MainActor in
+                guard let self, self.avatarUtterance == id else { return }
+                self.avatarWordRange = range
+                self.avatarWordTick &+= 1
+            }
+        }
+        speechDelegate.onEnd = { [weak self] u in
+            let id = ObjectIdentifier(u)
+            Task { @MainActor in
+                guard let self, self.avatarUtterance == id else { return }
+                self.avatarUtterance = nil
+                self.avatarSpeaking = false
+                self.avatarWordRange = nil
+            }
         }
         synth.delegate = speechDelegate
     }
@@ -297,13 +316,15 @@ final class VoiceTranslator: ObservableObject {
         }
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            guard sink.append(buffer) else { return }   // muted while speaking
+            guard sink.append(buffer) else { micMeter.set(0); return }   // muted while speaking
             if let data = buffer.floatChannelData, buffer.frameLength > 0 {
                 let ch = data[0]
                 let n = Int(buffer.frameLength)
                 var sum: Float = 0
                 for i in 0..<n { sum += ch[i] * ch[i] }
-                if (sum / Float(n)).squareRoot() > speechLevelThreshold { onLevel() }
+                let rms = (sum / Float(n)).squareRoot()
+                micMeter.set(rms)        // avatar level display only
+                if rms > speechLevelThreshold { onLevel() }
             }
         }
         engine.prepare()
@@ -648,7 +669,9 @@ final class VoiceTranslator: ObservableObject {
                 let n = Int(buffer.frameLength)
                 var sum: Float = 0
                 for i in 0..<n { sum += ch[i] * ch[i] }
-                if (sum / Float(n)).squareRoot() > speechLevelThreshold { onLevel() }
+                let rms = (sum / Float(n)).squareRoot()
+                micMeter.set(rms)        // avatar level display only
+                if rms > speechLevelThreshold { onLevel() }
             }
         }
         engine.prepare()
@@ -773,11 +796,26 @@ struct VoiceTranslateView: View {
     @StateObject private var vt = VoiceTranslator()
     @AppStorage("spokenLang") private var spoken: SpokenLang = .english
     @AppStorage("liveMode") private var live = false
+    @AppStorage("showAvatar") private var showAvatar = true
     let textColor: Color
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("Voice translate").font(.title3.weight(.semibold))
+            ZStack {
+                Text("Translator").font(.title2.weight(.bold))
+                HStack {
+                    Spacer()
+                    Toggle("Avatar", isOn: $showAvatar)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .help("Show the animated avatar")
+                }
+            }
+
+            if showAvatar {
+                AvatarCard(vt: vt, textColor: textColor)
+                    .transition(.opacity)
+            }
 
             HStack(spacing: 8) {
                 Text("I'm speaking")
@@ -939,10 +977,141 @@ struct VoiceTranslateView: View {
     }
 }
 
+// Drives AvatarStage (AvatarView.swift) from VoiceTranslator state.
+struct AvatarCard: View {
+    @ObservedObject var vt: VoiceTranslator
+    let textColor: Color
+
+    @State private var mouth: CGFloat = 0
+    @State private var blink: CGFloat = 0
+    @State private var nod: CGFloat = 0
+    @State private var level: CGFloat = 0
+    @State private var thinkPhase = 0
+    @State private var lastWordAt = Date.distantPast
+    @State private var lastNodAt = Date.distantPast
+    @State private var paused = false
+
+    private var mood: AvatarMood {
+        if vt.avatarSpeaking { return .speaking }
+        if vt.isRecording { return .listening }
+        if vt.status == "Translating…" { return .thinking }
+        if vt.errorMessage != nil { return .concerned }
+        return .idle
+    }
+
+    private func expression(_ m: AvatarMood) -> (tilt: CGFloat, look: CGFloat, brow: CGFloat, smile: CGFloat) {
+        switch m {
+        case .idle:      return (0, 0, 0, 0.9)
+        case .listening: return (6, 0, 0.7, 0.5)
+        case .thinking:  return (-3, 1, 0.35, 0.3)
+        case .speaking:  return (0, 0, 0.3, 0.7)
+        case .concerned: return (-2, 0, -1, -0.5)
+        }
+    }
+
+    private var label: String {
+        switch mood {
+        case .idle:      return vt.liveActive ? "" : "Hi! Tap the mic and talk to me 👋"
+        case .listening: return "Listening…"
+        case .thinking:  return "Thinking…"
+        case .speaking:  return ""
+        case .concerned: return vt.permissionDenied ? "I can't hear you yet…" : "Hmm… something went wrong"
+        }
+    }
+
+    var body: some View {
+        let m = mood
+        let e = expression(m)
+        AvatarStage(mood: m, mouth: mouth, tilt: e.tilt, lookUp: e.look, blink: blink,
+                    brow: e.brow, smile: e.smile, level: level, breathing: !paused, nod: nod,
+                    thinkingPhase: thinkPhase,
+                    bubbleText: m == .speaking ? vt.avatarSpeech : nil,
+                    highlight: vt.avatarWordRange, label: label, textColor: textColor)
+            .animation(.spring(response: 0.45, dampingFraction: 0.75), value: m)
+            .task(id: paused) { await blinkLoop() }
+            .task(id: "\(m)-\(paused)") { await moodLoop(m) }
+            .onChange(of: vt.transcript) { _, t in nodIfNeeded(t) }
+            .onChange(of: vt.avatarWordTick) { _, _ in wordPulse() }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+                guard let w = note.object as? NSWindow, !(w is NSPanel) else { return }
+                let hidden = !w.occlusionState.contains(.visible)
+                if hidden != paused { paused = hidden }
+            }
+    }
+
+    private func blinkLoop() async {
+        while !Task.isCancelled && !paused {
+            try? await Task.sleep(for: .milliseconds(Int.random(in: 2000...5000)))
+            if Task.isCancelled { return }
+            let times = Int.random(in: 0..<6) == 0 ? 2 : 1   // occasional double blink
+            for _ in 0..<times {
+                withAnimation(.easeIn(duration: 0.06)) { blink = 1 }
+                try? await Task.sleep(for: .milliseconds(110))
+                withAnimation(.easeOut(duration: 0.09)) { blink = 0 }
+                try? await Task.sleep(for: .milliseconds(140))
+            }
+        }
+    }
+
+    private func moodLoop(_ m: AvatarMood) async {
+        if m != .speaking { withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { mouth = 0 } }
+        if m != .listening { level = 0 }
+        guard !paused else { return }
+        switch m {
+        case .listening:
+            while !Task.isCancelled {
+                let target = min(1, CGFloat(micMeter.value) * 14)
+                level = level * 0.55 + target * 0.45
+                try? await Task.sleep(for: .milliseconds(66))
+            }
+        case .speaking:
+            // Fallback syllable motion between word callbacks.
+            var open = true
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(120))
+                if Date().timeIntervalSince(lastWordAt) > 0.22 {
+                    open.toggle()
+                    withAnimation(.spring(response: 0.13, dampingFraction: 0.65)) {
+                        mouth = open ? .random(in: 0.4...0.85) : .random(in: 0.05...0.2)
+                    }
+                }
+            }
+        case .thinking:
+            while !Task.isCancelled {
+                thinkPhase += 1
+                try? await Task.sleep(for: .milliseconds(350))
+            }
+        case .idle, .concerned:
+            break
+        }
+    }
+
+    private func wordPulse() {
+        guard vt.avatarSpeaking else { return }
+        lastWordAt = Date()
+        withAnimation(.spring(response: 0.11, dampingFraction: 0.55)) { mouth = .random(in: 0.6...1.0) }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(130))
+            guard vt.avatarSpeaking else { return }
+            withAnimation(.spring(response: 0.14, dampingFraction: 0.7)) { mouth = .random(in: 0.12...0.3) }
+        }
+    }
+
+    private func nodIfNeeded(_ text: String) {
+        guard mood == .listening, !text.isEmpty, Date().timeIntervalSince(lastNodAt) > 0.8 else { return }
+        lastNodAt = Date()
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { nod = 3.5 }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) { nod = 0 }
+        }
+    }
+}
+
 @main
 struct GoodMorningApp: App {
     var body: some Scene {
-        WindowGroup("Greeting") { ContentView() }
+        WindowGroup("Translator") { ContentView() }
             .windowResizability(.contentSize)
     }
 }
