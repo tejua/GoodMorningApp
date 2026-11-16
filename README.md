@@ -6,6 +6,17 @@ A tiny SwiftUI macOS app that greets you based on the time of day (morning, afte
 
 Pick the language you're speaking (English or Hindi), tap the mic (or press Space), and talk. Recording stops by itself after 2 seconds of silence (or tap stop / press Space any time); if nothing is heard for 8 seconds it stops without translating. The app shows a live transcript, translates it into the other language and speaks the translation aloud. Use **Replay** to hear it again.
 
+### Live mode (Mac)
+
+Turn on the **Live** switch next to the language picker for sentence-by-sentence translation while you keep talking. Tap the mic (or press Space) once and it keeps listening until you tap Stop or press Space again:
+
+- The translation box updates live as you speak.
+- After a short pause (about 1 second) the sentence is finished, translated and spoken, then it listens for the next one.
+- Every sentence is added to a **History** list (newest at the bottom) with its translation and a replay button. **Clear** empties it; it keeps the last 50.
+- While a translation is being spoken, the mic input is ignored so the Mac doesn't translate its own voice. Headphones work best, especially in a quiet room with loud speakers.
+
+With Live off, it works as before: speak once, it stops after 2 seconds of silence, translates and speaks.
+
 Everything runs on-device with Apple frameworks, so it's fast and needs no API keys:
 
 - **Speech** + **AVAudioEngine** for live transcription (on-device recognition when available)
