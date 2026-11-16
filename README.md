@@ -21,3 +21,17 @@ On first use macOS asks for **Microphone** and **Speech Recognition** access. Th
 ```
 
 This compiles `main.swift` with `swiftc` into `~/Desktop/Good Morning.app` and opens it. Requires macOS 15+ and Xcode command line tools.
+
+## iPhone / iPad (iOS) app
+
+The `iOS/` folder has an iOS version with the same features: time-based greeting, device name, live clock and date, background and text colour pickers, and English ⇄ Hindi voice translate with 2-second silence auto-stop.
+
+1. Open `iOS/GoodMorning.xcodeproj` in Xcode.
+2. Select the **GoodMorning** target › **Signing & Capabilities** and pick your Team (automatic signing).
+3. Plug in your iPhone, select it as the run destination and press **Run**. The first time, you may need to trust the developer in Settings › General › VPN & Device Management.
+
+Requires **iOS 18+** (the Translation framework needs it). On first use iOS asks for **Microphone** and **Speech Recognition** access, and the first translation may ask to download the English/Hindi language packs.
+
+Note: since iOS 16, apps see a generic device name (for example "iPhone") instead of your phone's personal name, unless Apple grants a special entitlement.
+
+The Xcode project is generated from `iOS/project.yml` with [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`cd iOS && xcodegen generate`), but the generated project is committed, so you don't need XcodeGen to build.

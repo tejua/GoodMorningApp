@@ -1,0 +1,47 @@
+name: GoodMorning
+options:
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  GoodMorning:
+    type: application
+    platform: iOS
+    sources:
+      - path: GoodMorning
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_NAME: GoodMorning
+        PRODUCT_BUNDLE_IDENTIFIER: com.teju.goodmorning.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+    info:
+      path: GoodMorning/Info.plist
+      properties:
+        CFBundleDisplayName: Good Morning
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSMicrophoneUsageDescription: Good Morning listens to you so it can transcribe and translate what you say.
+        NSSpeechRecognitionUsageDescription: Good Morning turns your speech into text so it can translate it between English and Hindi.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
