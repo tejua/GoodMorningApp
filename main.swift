@@ -74,6 +74,8 @@ struct ContentView: View {
 
 // MARK: - Voice translation (all on-device Apple frameworks)
 
+enum AppMode: String, CaseIterable { case translate, correct }
+
 enum SpokenLang: String, CaseIterable, Identifiable {
     // Raw values of english/hindi kept so saved choices from earlier versions still load.
     case english, hindi, spanish, french, german, japanese, chinese, arabic, portuguese, korean
@@ -183,6 +185,10 @@ final class VoiceTranslator: ObservableObject {
     private let synth = AVSpeechSynthesizer()
     private(set) var source: SpokenLang = .english
     private(set) var target: SpokenLang = .hindi
+
+    // Correct-my-English mode
+    @Published var correctMode = false
+    @Published var correction: CorrectionResult?
     private var pendingText = ""
     private var prepareOnly = false
     private var finished = true
@@ -280,6 +286,7 @@ final class VoiceTranslator: ObservableObject {
         if isRecording {
             if liveActive { stopLive() } else { stop() }
         } else {
+            correctMode = false
             Task { if live { await startLive(lang, to: dest) } else { await start(lang, to: dest) } }
         }
     }
@@ -601,6 +608,7 @@ final class VoiceTranslator: ObservableObject {
         source = lang
         target = dest
         transcript = ""
+        correction = nil
         translation = ""
         finished = false
         session += 1
@@ -756,7 +764,36 @@ final class VoiceTranslator: ObservableObject {
             status = "Didn't catch that. Try again."
             return
         }
-        translate(text)
+        if correctMode {
+            Task { await correct(text) }
+        } else {
+            translate(text)
+        }
+    }
+
+    // MARK: Correct my English
+    func toggleCorrect() {
+        if isRecording {
+            if liveActive { stopLive() } else { stop() }
+        } else {
+            correctMode = true
+            Task { await start(.english, to: .english) }   // same recognition + 2 s auto-stop as Translate
+        }
+    }
+
+    private func correct(_ text: String) async {
+        status = "Checking…"
+        let result = await GrammarCoach.check(text)
+        guard correctMode, !isRecording else { return }
+        correction = result
+        status = result.isCorrect ? "Perfect!" : "Corrected"
+        speakCorrection()
+    }
+
+    func speakCorrection() {
+        guard let c = correction else { return }
+        synth.stopSpeaking(at: .immediate)
+        speakText(c.isCorrect ? "Perfect! That's correct." : c.corrected, in: .english)
     }
 
     // MARK: Translation
@@ -837,6 +874,7 @@ struct TranslatorScreen: View {
     @AppStorage("targetLang") private var target: SpokenLang = .hindi
     @AppStorage("liveMode") private var live = false
     @AppStorage("showAvatar") private var showAvatar = true
+    @AppStorage("appMode") private var mode: AppMode = .translate
     @State private var showHistory = false
     let textColor: Color
 
@@ -927,11 +965,16 @@ struct TranslatorScreen: View {
         .animation(.easeInOut(duration: 0.2), value: showAvatar)
     }
 
-    private var youCaption: String { "You · \(vt.isRecording || vt.transcript.isEmpty ? source.name : vt.source.name)" }
+    private var youCaption: String {
+        mode == .correct ? "You · English" : "You · \(vt.isRecording || vt.transcript.isEmpty ? source.name : vt.source.name)"
+    }
     private var herCaption: String { "Translation · \(vt.isRecording ? target.name : vt.target.name)" }
 
     @ViewBuilder private var youBubble: some View {
-        if !vt.transcript.isEmpty {
+        if mode == .correct, !vt.isRecording, let c = vt.correction {
+            TalkBubble(caption: "You said", text: c.original, tailOnLeading: false,
+                       marks: c.isCorrect ? [] : c.wrong, strike: true)
+        } else if !vt.transcript.isEmpty {
             TalkBubble(caption: youCaption, text: vt.transcript, tailOnLeading: false)
         } else if vt.isRecording {
             TalkBubble(caption: youCaption, text: "Listening…", tailOnLeading: false, dim: true) {
@@ -940,8 +983,43 @@ struct TranslatorScreen: View {
         }
     }
 
-    @ViewBuilder private var herBubble: some View {
+    private var replayCorrection: some View {
+        Button { vt.speakCorrection() } label: { Label("Replay", systemImage: "speaker.wave.2.fill") }
+            .buttonStyle(.borderless)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color(red: 0.47, green: 0.40, blue: 0.86))
+    }
+
+    @ViewBuilder private var correctBubble: some View {
+        let c = vt.correction
         if vt.avatarSpeaking {
+            TalkBubble(caption: c?.isCorrect == true ? "Perfect! ✨" : "Correct English", text: vt.avatarSpeech,
+                       highlight: vt.avatarWordRange, tailOnLeading: true,
+                       marks: (c.map { vt.avatarSpeech == $0.corrected && !$0.isCorrect } ?? false) ? c!.changed : [],
+                       footnote: c.flatMap { $0.tip.isEmpty ? nil : "💡 " + $0.tip })
+        } else if vt.status == "Checking…" {
+            EmptyView()
+        } else if let c {
+            if c.isCorrect {
+                TalkBubble(caption: "Perfect! ✨", text: "That's correct — well done! 🎉", tailOnLeading: true,
+                           footnote: "Checked with \(c.engine)") { replayCorrection }
+            } else {
+                TalkBubble(caption: "Correct English", text: c.corrected, tailOnLeading: true,
+                           marks: c.changed, footnote: "💡 \(c.tip)") { replayCorrection }
+            }
+        } else if vt.errorMessage != nil {
+            TalkBubble(caption: "Hmm…", text: vt.permissionDenied ? "I can't hear you yet…" : "Something went wrong.",
+                       tailOnLeading: true)
+        } else if !vt.isRecording {
+            TalkBubble(caption: "Hi!", text: "Say a sentence in English and I'll help you correct it ✍️",
+                       tailOnLeading: true, footnote: "Using \(GrammarCoach.engineName)")
+        }
+    }
+
+    @ViewBuilder private var herBubble: some View {
+        if mode == .correct {
+            correctBubble
+        } else if vt.avatarSpeaking {
             TalkBubble(caption: herCaption, text: vt.avatarSpeech, highlight: vt.avatarWordRange, tailOnLeading: true)
         } else if vt.liveActive {
             let lastDone = vt.history.last(where: { !$0.translation.isEmpty })?.translation ?? ""
@@ -978,6 +1056,21 @@ struct TranslatorScreen: View {
         VStack(spacing: 10) {
             Text(vt.status).font(.callout).opacity(0.75).lineLimit(1)
 
+            Picker("", selection: $mode) {
+                Text("Translate").tag(AppMode.translate)
+                Text("Correct my English").tag(AppMode.correct)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 300)
+            .disabled(vt.isRecording)
+
+            if mode == .correct {
+                Text("Speak in English — I'll correct your grammar")
+                    .font(.callout)
+                    .opacity(0.8)
+                    .frame(height: 26)
+            } else {
             HStack(spacing: 10) {
                 Text("From").font(.callout).opacity(0.7)
                 langPicker($source)
@@ -994,6 +1087,7 @@ struct TranslatorScreen: View {
                 langPicker($target)
             }
             .disabled(vt.isRecording)
+            }
 
             micButton
                 .frame(maxWidth: .infinity)
@@ -1002,7 +1096,7 @@ struct TranslatorScreen: View {
                         Toggle("Live", isOn: $live)
                             .toggleStyle(.switch)
                             .controlSize(.small)
-                            .disabled(vt.isRecording)
+                            .disabled(vt.isRecording || mode == .correct)
                             .help("Live: keep listening and translate sentence by sentence")
                         Button { showHistory.toggle() } label: {
                             Label("History", systemImage: "clock.arrow.circlepath")
@@ -1031,7 +1125,9 @@ struct TranslatorScreen: View {
     }
 
     private var micButton: some View {
-        Button { vt.toggle(source, to: target, live: live) } label: {
+        Button {
+            if mode == .correct { vt.toggleCorrect() } else { vt.toggle(source, to: target, live: live) }
+        } label: {
             ZStack {
                 Circle()
                     .fill(vt.isRecording ? Color.red : textColor.opacity(0.18))
@@ -1123,7 +1219,7 @@ struct AvatarDriver: View {
     private var mood: AvatarMood {
         if vt.avatarSpeaking { return .speaking }
         if vt.isRecording { return .listening }
-        if vt.status == "Translating…" { return .thinking }
+        if vt.status == "Translating…" || vt.status == "Checking…" { return .thinking }
         if vt.errorMessage != nil { return .concerned }
         return .idle
     }
@@ -1136,7 +1232,9 @@ struct AvatarDriver: View {
         case .idle:      return Pose(tilt: 0, look: 0, brow: 0, smile: 0.9, l: restL, r: restR)
         case .listening: return Pose(tilt: 6, look: 0, brow: 0.7, smile: 0.5, l: restL, r: CGPoint(x: 154, y: 108))  // hand cupped at ear
         case .thinking:  return Pose(tilt: -3, look: 1, brow: 0.35, smile: 0.3, l: restL, r: CGPoint(x: 110, y: 141)) // hand under chin
-        case .speaking:  return Pose(tilt: 0, look: 0, brow: 0.3, smile: 0.7, l: gestureL, r: gestureR)
+        case .speaking:  return Pose(tilt: 0, look: 0, brow: 0.3,
+                                     smile: (vt.correctMode && vt.correction?.isCorrect == true) ? 1 : 0.7,  // big smile for "Perfect!"
+                                     l: gestureL, r: gestureR)
         case .concerned: return Pose(tilt: -2, look: 0, brow: -1, smile: -0.5,
                                      l: CGPoint(x: 94, y: 226), r: CGPoint(x: 106, y: 226))            // hands clasped
         }

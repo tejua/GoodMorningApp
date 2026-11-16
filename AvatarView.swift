@@ -401,6 +401,9 @@ struct TalkBubble<Accessory: View>: View {
     var highlight: NSRange? = nil
     var tailOnLeading: Bool
     var dim = false
+    var marks: [NSRange] = []      // words to strike through (strike) or highlight as fixed
+    var strike = false
+    var footnote: String? = nil
     @ViewBuilder var accessory: () -> Accessory
 
     private let ink = Color(red: 0.16, green: 0.12, blue: 0.22)
@@ -408,6 +411,20 @@ struct TalkBubble<Accessory: View>: View {
 
     var body: some View {
         var attr = AttributedString(text)
+        for m in marks {
+            guard let range = Range(m, in: text),
+                  let lo = AttributedString.Index(range.lowerBound, within: attr),
+                  let hi = AttributedString.Index(range.upperBound, within: attr) else { continue }
+            if strike {
+                attr[lo..<hi].strikethroughStyle = .single
+                attr[lo..<hi].strikethroughColor = .red
+                attr[lo..<hi].foregroundColor = Color(red: 0.80, green: 0.15, blue: 0.20)
+            } else {
+                attr[lo..<hi].foregroundColor = Color(red: 0.07, green: 0.55, blue: 0.30)
+                attr[lo..<hi].font = .title3.weight(.bold)
+                attr[lo..<hi].underlineStyle = .single
+            }
+        }
         if let r = highlight, let range = Range(r, in: text),
            let lower = AttributedString.Index(range.lowerBound, within: attr),
            let upper = AttributedString.Index(range.upperBound, within: attr) {
@@ -426,6 +443,12 @@ struct TalkBubble<Accessory: View>: View {
                 .lineLimit(9)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+            if let footnote, !footnote.isEmpty {
+                Text(footnote)
+                    .font(.callout)
+                    .foregroundStyle(ink.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -447,7 +470,9 @@ struct TalkBubble<Accessory: View>: View {
 }
 
 extension TalkBubble where Accessory == EmptyView {
-    init(caption: String, text: String, highlight: NSRange? = nil, tailOnLeading: Bool, dim: Bool = false) {
-        self.init(caption: caption, text: text, highlight: highlight, tailOnLeading: tailOnLeading, dim: dim) { EmptyView() }
+    init(caption: String, text: String, highlight: NSRange? = nil, tailOnLeading: Bool, dim: Bool = false,
+         marks: [NSRange] = [], strike: Bool = false, footnote: String? = nil) {
+        self.init(caption: caption, text: text, highlight: highlight, tailOnLeading: tailOnLeading, dim: dim,
+                  marks: marks, strike: strike, footnote: footnote) { EmptyView() }
     }
 }

@@ -41,6 +41,18 @@ It uses Apple frameworks only, so it's fast and needs no API keys:
 
 On first use macOS asks for **Microphone** and **Speech Recognition** access. The first translation for a language pair may ask you to download its language packs (also in System Settings › General › Language & Region › Translation Languages); after that translation works offline. For on-device speech recognition in languages other than English and Hindi, add them under System Settings › Keyboard › Dictation; until then those languages use Apple's servers.
 
+### Correct my English (Mac, v1.6)
+
+Switch the bottom-bar mode from **Translate** to **Correct my English**, press the mic (or Space) and say an English sentence. It stops on its own after 2 s of silence, the same as Translate.
+
+- **Your bubble** shows what you said, with the wrong words ~~struck through~~ in red.
+- **Her bubble** shows the corrected sentence, with the fixed words in green and a 💡 tip for the main fix (e.g. "use 'went' (past tense) with 'yesterday'"). She reads it aloud with lip-sync. Press **Replay** to hear it again.
+- If your sentence was already correct, she says **"Perfect!"** with a big smile.
+
+Correction runs fully on-device, with no cloud and no API keys:
+- **Apple Intelligence (Foundation Models)** is used automatically on macOS 26+ when Apple Intelligence is turned on.
+- Otherwise, **built-in grammar rules** handle common mistakes: verb tense ("go → went", "buyed → bought"), he/she/it + -s, I am/was/were agreement, "I am agree", articles ("to the market"), plurals after numbers, "Me and him → He and I", their/there, everyday/every day, missing apostrophes, and macOS spelling fixes.
+
 ## Build
 
 ```bash
