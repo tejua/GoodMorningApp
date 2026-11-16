@@ -136,6 +136,18 @@ final class VoiceTranslator: ObservableObject {
     private var finished = true
     private var session = 0
 
+    // Auto-stop: after the first speech, stop when there's this much silence.
+    static let silenceTimeout: TimeInterval = 2.0
+    // Give up (without translating) if no speech at all within this time.
+    static let noSpeechTimeout: TimeInterval = 8.0
+    // Mic RMS level that counts as "speaking" (resets the silence timer).
+    nonisolated static let speechLevelThreshold: Float = 0.02
+    private var speechDetected = false
+    private var lastSpeechAt = Date()
+    private var recordingStartedAt = Date()
+    private var monitor: Task<Void, Never>?
+    private var onDevice = false
+
     // MARK: Permissions
     nonisolated static func requestPermissions() async -> (mic: Bool, speech: Bool) {
         let speech: Bool = await withCheckedContinuation { cont in
@@ -185,23 +197,83 @@ final class VoiceTranslator: ObservableObject {
         request = req
 
         do {
-            task = try Self.startAudio(engine: engine, recognizer: rec, request: req) { [weak self] text, isFinal, error in
-                Task { @MainActor in
-                    self?.handle(text: text, isFinal: isFinal, error: error, session: mySession)
-                }
-            }
+            task = try Self.startAudio(engine: engine, recognizer: rec, request: req,
+                onLevel: { [weak self] in
+                    Task { @MainActor in self?.heardSpeech(session: mySession) }
+                },
+                onResult: { [weak self] text, isFinal, error in
+                    Task { @MainActor in
+                        self?.handle(text: text, isFinal: isFinal, error: error, session: mySession)
+                    }
+                })
         } catch {
             errorMessage = "Couldn't start the microphone: \(error.localizedDescription)"
             return
         }
         isRecording = true
-        status = rec.supportsOnDeviceRecognition ? "Listening (on-device)… tap to stop" : "Listening… tap to stop"
+        onDevice = rec.supportsOnDeviceRecognition
+        speechDetected = false
+        recordingStartedAt = Date()
+        lastSpeechAt = Date()
+        status = "Listening\(onDevice ? " (on-device)" : "")… start speaking (stops after 2s of silence)"
+        startMonitor(session: mySession)
+    }
+
+    // One polling loop per recording drives both timeouts; cancelled on any stop.
+    private func startMonitor(session s: Int) {
+        monitor?.cancel()
+        monitor = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, !Task.isCancelled, self.isRecording, self.session == s else { return }
+                let now = Date()
+                if self.speechDetected {
+                    if now.timeIntervalSince(self.lastSpeechAt) >= Self.silenceTimeout {
+                        self.stop()          // same path as tapping Stop
+                        return
+                    }
+                } else if now.timeIntervalSince(self.recordingStartedAt) >= Self.noSpeechTimeout {
+                    self.cancelNoSpeech()
+                    return
+                }
+            }
+        }
+    }
+
+    private func heardSpeech(session s: Int) {
+        guard s == session, isRecording else { return }
+        lastSpeechAt = Date()
+        if !speechDetected {
+            speechDetected = true
+            status = "Listening\(onDevice ? " (on-device)" : "")… stops after 2s of silence"
+        }
+    }
+
+    private func tearDownAudio() {
+        monitor?.cancel()
+        monitor = nil
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        isRecording = false
+    }
+
+    private func cancelNoSpeech() {
+        guard isRecording else { return }
+        tearDownAudio()
+        finished = true
+        task?.cancel()
+        task = nil
+        request = nil
+        session += 1
+        status = "Didn't hear anything. Tap the mic and start speaking."
     }
 
     // Kept nonisolated so audio/recognition callbacks (background threads) don't inherit MainActor.
     nonisolated static func startAudio(engine: AVAudioEngine,
                                        recognizer: SFSpeechRecognizer,
                                        request: SFSpeechAudioBufferRecognitionRequest,
+                                       onLevel: @escaping @Sendable () -> Void,
                                        onResult: @escaping @Sendable (String?, Bool, Error?) -> Void) throws -> SFSpeechRecognitionTask {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -212,6 +284,14 @@ final class VoiceTranslator: ObservableObject {
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             request.append(buffer)
+            // RMS of channel 0; report only when loud enough to count as speech.
+            if let data = buffer.floatChannelData, buffer.frameLength > 0 {
+                let ch = data[0]
+                let n = Int(buffer.frameLength)
+                var sum: Float = 0
+                for i in 0..<n { sum += ch[i] * ch[i] }
+                if (sum / Float(n)).squareRoot() > speechLevelThreshold { onLevel() }
+            }
         }
         engine.prepare()
         try engine.start()
@@ -222,10 +302,7 @@ final class VoiceTranslator: ObservableObject {
 
     func stop() {
         guard isRecording else { return }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        request?.endAudio()
-        isRecording = false
+        tearDownAudio()
         status = "Translating…"
         let mySession = session
         // Don't wait long for the "final" result: use the latest text after a short grace period.
@@ -237,7 +314,10 @@ final class VoiceTranslator: ObservableObject {
 
     private func handle(text: String?, isFinal: Bool, error: Error?, session s: Int) {
         guard s == session, !finished else { return }
-        if let text, !text.isEmpty { transcript = text }
+        if let text, !text.isEmpty {
+            if text != transcript { heardSpeech(session: s) }
+            transcript = text
+        }
         if isFinal {
             if isRecording { stop() }
             finish()

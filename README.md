@@ -4,7 +4,7 @@ A tiny SwiftUI macOS app that greets you based on the time of day (morning, afte
 
 ## Voice translate (English ⇄ Hindi)
 
-Pick the language you're speaking (English or Hindi), tap the mic (or press Space), talk, then tap stop. The app shows a live transcript, translates it into the other language and speaks the translation aloud. Use **Replay** to hear it again.
+Pick the language you're speaking (English or Hindi), tap the mic (or press Space), and talk. Recording stops by itself after 2 seconds of silence (or tap stop / press Space any time); if nothing is heard for 8 seconds it stops without translating. The app shows a live transcript, translates it into the other language and speaks the translation aloud. Use **Replay** to hear it again.
 
 Everything runs on-device with Apple frameworks, so it's fast and needs no API keys:
 
