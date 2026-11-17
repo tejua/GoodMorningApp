@@ -41,17 +41,35 @@ It uses Apple frameworks only, so it's fast and needs no API keys:
 
 On first use macOS asks for **Microphone** and **Speech Recognition** access. The first translation for a language pair may ask you to download its language packs (also in System Settings › General › Language & Region › Translation Languages); after that translation works offline. For on-device speech recognition in languages other than English and Hindi, add them under System Settings › Keyboard › Dictation; until then those languages use Apple's servers.
 
-### Correct my English (Mac, v1.6)
+### Correct my English (Mac, v1.7)
 
-Switch the bottom-bar mode from **Translate** to **Correct my English**, press the mic (or Space) and say an English sentence. It stops on its own after 2 s of silence, the same as Translate.
+Switch the bottom-bar mode from **Translate** to **Correct my English**, press the mic (or Space) and say an English sentence. It stops on its own after 2 s of silence.
 
 - **Your bubble** shows what you said, with the wrong words ~~struck through~~ in red.
-- **Her bubble** shows the corrected sentence, with the fixed words in green and a 💡 tip for the main fix (e.g. "use 'went' (past tense) with 'yesterday'"). She reads it aloud with lip-sync. Press **Replay** to hear it again.
-- If your sentence was already correct, she says **"Perfect!"** with a big smile.
+- **Her bubble** shows the corrected sentence, with the fixed words in green and up to three 💡 reasons (e.g. "Use 'went' (past tense) with 'yesterday'"). She reads it aloud with lip-sync. Press **Replay** to hear it again.
+- She's honest about how sure she is:
+  - **Perfect!** only when every checker found nothing in a short, ordinary sentence.
+  - **Looks correct** for longer sentences where nothing was found.
+  - **Not sure** when something looks off (amber underline) or the speech was probably misheard.
 
-Correction runs fully on-device, with no cloud and no API keys:
-- **Apple Intelligence (Foundation Models)** is used automatically on macOS 26+ when Apple Intelligence is turned on.
-- Otherwise, **built-in grammar rules** handle common mistakes: verb tense ("go → went", "buyed → bought"), he/she/it + -s, I am/was/were agreement, "I am agree", articles ("to the market"), plurals after numbers, "Me and him → He and I", their/there, everyday/every day, missing apostrophes, and macOS spelling fixes.
+It runs fully on-device, with no cloud and no keys. A pipeline of pluggable engines (`GrammarEngine` in `Corrector.swift`) checks each sentence:
+1. **Apple Intelligence** (Foundation Models), when it's turned on (macOS 26+).
+2. **Built-in rules** for common Indian-English learner mistakes:
+   - **Tense:** time words ("yesterday / last week / ago / tomorrow / next week").
+   - **Agreement:** subject–verb agreement, including noun subjects ("my sister work").
+   - **Helper verbs:** "didn't went", "can speaks", "will going", "has went", "I have finish".
+   - **Fixed phrases:** "I am agree", "I am having two sisters", "since 2 years", "from 2019", "discuss about", "return back", "revert back", "more better", "elder than", "senior than", "prefer … than", "married with", "reach to", "go to home", "borrow me", "explain me", "told to me", "listen music", "wait you", "can able to", "Myself Rahul".
+   - **Questions:** word order ("Where you are going?", "What you want?").
+   - **Nouns and articles:** articles (a/an, "to the market"), plurals, uncountables ("informations"), double negatives.
+3. **The macOS grammar checker** (NSSpellChecker grammar and spelling).
+
+Commas added by speech recognition are ignored.
+
+**Diagnostics:** each sentence logs what speech heard and what every engine said to `~/Library/Logs/GoodMorning/correct-english.log`. To run the built-in test suite, use `open "Good Morning.app" --args --selftest-correct`. Results go to `~/Library/Logs/GoodMorning/correct-selftest.txt`. The audio part only runs if Speech Recognition is already allowed.
+
+**Limits:**
+- Apple's speech recognition sometimes "fixes" grammar before the checker sees it (e.g. "can speaks" is heard as "can speak"), so those mistakes can't be caught.
+- The rules cover common patterns, not all of English.
 
 ## Build
 

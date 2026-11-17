@@ -403,6 +403,7 @@ struct TalkBubble<Accessory: View>: View {
     var dim = false
     var marks: [NSRange] = []      // words to strike through (strike) or highlight as fixed
     var strike = false
+    var warn = false               // amber underline: "this might be wrong"
     var footnote: String? = nil
     @ViewBuilder var accessory: () -> Accessory
 
@@ -415,7 +416,11 @@ struct TalkBubble<Accessory: View>: View {
             guard let range = Range(m, in: text),
                   let lo = AttributedString.Index(range.lowerBound, within: attr),
                   let hi = AttributedString.Index(range.upperBound, within: attr) else { continue }
-            if strike {
+            if warn {
+                attr[lo..<hi].underlineStyle = .thick
+                attr[lo..<hi].underlineColor = .orange
+                attr[lo..<hi].foregroundColor = Color(red: 0.75, green: 0.42, blue: 0.0)
+            } else if strike {
                 attr[lo..<hi].strikethroughStyle = .single
                 attr[lo..<hi].strikethroughColor = .red
                 attr[lo..<hi].foregroundColor = Color(red: 0.80, green: 0.15, blue: 0.20)
@@ -471,8 +476,8 @@ struct TalkBubble<Accessory: View>: View {
 
 extension TalkBubble where Accessory == EmptyView {
     init(caption: String, text: String, highlight: NSRange? = nil, tailOnLeading: Bool, dim: Bool = false,
-         marks: [NSRange] = [], strike: Bool = false, footnote: String? = nil) {
+         marks: [NSRange] = [], strike: Bool = false, warn: Bool = false, footnote: String? = nil) {
         self.init(caption: caption, text: text, highlight: highlight, tailOnLeading: tailOnLeading, dim: dim,
-                  marks: marks, strike: strike, footnote: footnote) { EmptyView() }
+                  marks: marks, strike: strike, warn: warn, footnote: footnote) { EmptyView() }
     }
 }

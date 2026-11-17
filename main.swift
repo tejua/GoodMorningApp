@@ -786,14 +786,26 @@ final class VoiceTranslator: ObservableObject {
         let result = await GrammarCoach.check(text)
         guard correctMode, !isRecording else { return }
         correction = result
-        status = result.isCorrect ? "Perfect!" : "Corrected"
+        switch result.verdict {
+        case .corrected: status = "Corrected"
+        case .perfect: status = "Perfect!"
+        case .looksCorrect: status = "Looks correct"
+        case .unsure: status = "Not sure"
+        }
         speakCorrection()
     }
 
     func speakCorrection() {
         guard let c = correction else { return }
         synth.stopSpeaking(at: .immediate)
-        speakText(c.isCorrect ? "Perfect! That's correct." : c.corrected, in: .english)
+        let line: String
+        switch c.verdict {
+        case .corrected: line = c.corrected
+        case .perfect: line = "Perfect! That's correct."
+        case .looksCorrect: line = "Looks correct to me!"
+        case .unsure: line = "Hmm, I'm not sure about that one. " + (c.flags.first ?? "")
+        }
+        speakText(line, in: .english)
     }
 
     // MARK: Translation
@@ -973,7 +985,8 @@ struct TranslatorScreen: View {
     @ViewBuilder private var youBubble: some View {
         if mode == .correct, !vt.isRecording, let c = vt.correction {
             TalkBubble(caption: "You said", text: c.original, tailOnLeading: false,
-                       marks: c.isCorrect ? [] : c.wrong, strike: true)
+                       marks: c.verdict == .corrected ? c.wrong : (c.verdict == .unsure ? c.flagged : []),
+                       strike: c.verdict == .corrected, warn: c.verdict == .unsure)
         } else if !vt.transcript.isEmpty {
             TalkBubble(caption: youCaption, text: vt.transcript, tailOnLeading: false)
         } else if vt.isRecording {
@@ -990,22 +1003,44 @@ struct TranslatorScreen: View {
             .foregroundStyle(Color(red: 0.47, green: 0.40, blue: 0.86))
     }
 
+    private func tipLines(_ c: CorrectionResult) -> String? {
+        c.tips.isEmpty ? nil : c.tips.prefix(3).map { "💡 " + $0 }.joined(separator: "\n")
+    }
+
+    private func verdictCaption(_ c: CorrectionResult?) -> String {
+        switch c?.verdict {
+        case .perfect: return "Perfect! ✨"
+        case .looksCorrect: return "Looks correct 👍"
+        case .unsure: return "Hmm, not sure 🤔"
+        default: return "Correct English"
+        }
+    }
+
     @ViewBuilder private var correctBubble: some View {
         let c = vt.correction
         if vt.avatarSpeaking {
-            TalkBubble(caption: c?.isCorrect == true ? "Perfect! ✨" : "Correct English", text: vt.avatarSpeech,
+            TalkBubble(caption: verdictCaption(c), text: vt.avatarSpeech,
                        highlight: vt.avatarWordRange, tailOnLeading: true,
-                       marks: (c.map { vt.avatarSpeech == $0.corrected && !$0.isCorrect } ?? false) ? c!.changed : [],
-                       footnote: c.flatMap { $0.tip.isEmpty ? nil : "💡 " + $0.tip })
+                       marks: (c.map { $0.verdict == .corrected && vt.avatarSpeech == $0.corrected } ?? false) ? c!.changed : [],
+                       footnote: c.flatMap { tipLines($0) })
         } else if vt.status == "Checking…" {
             EmptyView()
         } else if let c {
-            if c.isCorrect {
-                TalkBubble(caption: "Perfect! ✨", text: "That's correct — well done! 🎉", tailOnLeading: true,
-                           footnote: "Checked with \(c.engine)") { replayCorrection }
-            } else {
-                TalkBubble(caption: "Correct English", text: c.corrected, tailOnLeading: true,
-                           marks: c.changed, footnote: "💡 \(c.tip)") { replayCorrection }
+            switch c.verdict {
+            case .perfect:
+                TalkBubble(caption: verdictCaption(c), text: "That's correct — well done! 🎉", tailOnLeading: true,
+                           footnote: "Checked by \(c.engine)") { replayCorrection }
+            case .looksCorrect:
+                TalkBubble(caption: verdictCaption(c), text: "Looks correct to me — I couldn't find a mistake.",
+                           tailOnLeading: true,
+                           footnote: "I check common grammar mistakes, so I can miss some in longer sentences.") { replayCorrection }
+            case .unsure:
+                TalkBubble(caption: verdictCaption(c), text: c.flags.first ?? "Something here may be wrong.",
+                           tailOnLeading: true,
+                           footnote: "I couldn't find a sure fix — try saying it another way.") { replayCorrection }
+            case .corrected:
+                TalkBubble(caption: verdictCaption(c), text: c.corrected, tailOnLeading: true,
+                           marks: c.changed, footnote: tipLines(c)) { replayCorrection }
             }
         } else if vt.errorMessage != nil {
             TalkBubble(caption: "Hmm…", text: vt.permissionDenied ? "I can't hear you yet…" : "Something went wrong.",
@@ -1233,7 +1268,7 @@ struct AvatarDriver: View {
         case .listening: return Pose(tilt: 6, look: 0, brow: 0.7, smile: 0.5, l: restL, r: CGPoint(x: 154, y: 108))  // hand cupped at ear
         case .thinking:  return Pose(tilt: -3, look: 1, brow: 0.35, smile: 0.3, l: restL, r: CGPoint(x: 110, y: 141)) // hand under chin
         case .speaking:  return Pose(tilt: 0, look: 0, brow: 0.3,
-                                     smile: (vt.correctMode && vt.correction?.isCorrect == true) ? 1 : 0.7,  // big smile for "Perfect!"
+                                     smile: (vt.correctMode && vt.correction?.verdict == .perfect) ? 1 : 0.7,  // big smile for "Perfect!"
                                      l: gestureL, r: gestureR)
         case .concerned: return Pose(tilt: -2, look: 0, brow: -1, smile: -0.5,
                                      l: CGPoint(x: 94, y: 226), r: CGPoint(x: 106, y: 226))            // hands clasped
@@ -1349,6 +1384,13 @@ struct AvatarDriver: View {
 
 @main
 struct GoodMorningApp: App {
+    init() {
+        // Hidden diagnostics: `open "Good Morning.app" --args --selftest-correct`
+        if CommandLine.arguments.contains("--selftest-correct") {
+            Task { @MainActor in await CorrectorSelfTest.runAndQuit(locale: SpokenLang.english.speechLocales[0]) }
+        }
+    }
+
     var body: some Scene {
         WindowGroup("Translator") { ContentView() }
             .defaultSize(width: 980, height: 780)
